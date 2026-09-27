@@ -93,11 +93,29 @@ class PydroidScanner:
         max_per_sector: int = 2,
         export_csv: bool = True,
         export_excel: bool = True,
+        auto_update_universe: bool = True,
     ) -> Tuple[pd.DataFrame, Dict, Dict, Dict, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
         """
         Executes end-to-end screener pipeline on SQLite universe.
+        If auto_update_universe=True and as_of_date is None, automatically syncs universe
+        with the latest market date before running the scan.
         Returns: (top_df, breadth_results, sector_results, regime_info, top_etf_df, delivery_df)
         """
+        # 0. Dynamic Market Data Auto-Sync
+        if auto_update_universe and as_of_date is None:
+            self.log("Auto-Sync Active: Checking NSE archives for latest market data...")
+            try:
+                from .auto_fetch import PydroidAutoFetch
+                fetcher = PydroidAutoFetch(self.base_dir)
+                sync_res = fetcher.sync_universe(dry_run=False)
+                dates_fetched = sync_res.get("dates_fetched", 0)
+                if dates_fetched > 0:
+                    self.log(f"✓ Successfully fetched and saved {dates_fetched} new market session(s) to SQLite universe!")
+                else:
+                    self.log("✓ Universe is already up to date with latest market session.")
+            except Exception as e:
+                self.log(f"Warning: Auto-update universe check skipped ({e}). Proceeding with current data.")
+
         target_date = as_of_date or get_latest_date()
         self.log(f"Starting Production Momentum Scan as of {target_date}...")
 

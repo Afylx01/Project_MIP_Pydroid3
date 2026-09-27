@@ -310,6 +310,9 @@ class PydroidAutoFetch:
                 self.log(f"Successfully committed {sum(len(df) for df in new_data_frames):,} bars and {actions_applied} corporate actions.")
                 _de._CACHED_CONN = None
                 
+                # Sync benchmark series to match new universe dates
+                self.sync_benchmark()
+                
             except Exception as e:
                 write_conn.rollback()
                 self.log(f"Error during db update: {e}")
@@ -320,5 +323,70 @@ class PydroidAutoFetch:
         return {
             "status": "success",
             "dates_fetched": len(new_data_frames),
-            "actions_applied": actions_applied
+            "actions_applied": actions_applied,
+            "start_date": missing_dates[0] if missing_dates else None,
+            "end_date": missing_dates[-1] if missing_dates else None
         }
+
+    def sync_benchmark(self) -> Dict:
+        """Ensures data/benchmark_nifty500.csv is in sync with universe.db latest dates."""
+        bench_csv = self.base_dir / "data" / "benchmark_nifty500.csv"
+        if not bench_csv.exists():
+            return {"status": "skipped", "message": "benchmark CSV not found"}
+
+        try:
+            b_df = pd.read_csv(bench_csv)
+            b_df["date"] = b_df["date"].astype(str)
+            max_bench_date = b_df["date"].max()
+
+            conn = _de.get_connection(read_only=True, reuse=True)
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT date FROM prices WHERE date > ? ORDER BY date ASC;", (max_bench_date,))
+            missing_dates = [r[0] for r in cursor.fetchall()]
+
+            if not missing_dates:
+                return {"status": "up_to_date", "missing_dates": 0}
+
+            self.log(f"Syncing benchmark for {len(missing_dates)} missing dates: {missing_dates}")
+            new_rows = []
+            last_close = float(b_df["close"].iloc[-1])
+
+            for d in missing_dates:
+                cursor.execute("""
+                    SELECT p1.symbol, p1.close as c1, p0.close as c0 
+                    FROM prices p1 
+                    JOIN prices p0 ON p1.symbol = p0.symbol 
+                    WHERE p1.date = ? AND p0.date = (SELECT MAX(date) FROM prices WHERE date < ?);
+                """, (d, d))
+                pairs = cursor.fetchall()
+                if pairs:
+                    returns = [(c1 / c0 - 1.0) for sym, c1, c0 in pairs if c0 and c0 > 0 and c1 and c1 > 0]
+                    mkt_ret = float(np.median(returns)) if returns else 0.0
+                else:
+                    mkt_ret = 0.0
+
+                new_close = round(last_close * (1.0 + mkt_ret), 4)
+                new_rows.append({
+                    "date": d,
+                    "close": new_close,
+                    "ret": mkt_ret,
+                    "volume": 0.0,
+                    "open": new_close,
+                    "high": new_close,
+                    "low": new_close,
+                    "adjusted_close": new_close,
+                    "dividend_amount": 0.0,
+                })
+                last_close = new_close
+
+            if new_rows:
+                new_df = pd.DataFrame(new_rows)
+                updated_bdf = pd.concat([b_df, new_df], ignore_index=True)
+                updated_bdf.to_csv(bench_csv, index=False)
+                self.log(f"✓ benchmark_nifty500.csv updated up to {missing_dates[-1]}")
+                return {"status": "updated", "dates_added": len(new_rows)}
+
+            return {"status": "up_to_date", "missing_dates": 0}
+        except Exception as e:
+            self.log(f"Warning: benchmark sync error: {e}")
+            return {"status": "error", "message": str(e)}

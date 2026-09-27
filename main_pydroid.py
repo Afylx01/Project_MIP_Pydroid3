@@ -68,27 +68,30 @@ def print_banner(latest_date: str):
 # ═══════════════════════════════════════════════════════════════════════
 def run_scanner_flow(interactive: bool = True):
     clear_screen()
-    latest_date = get_latest_date()
-    print_banner(latest_date)
-    print(f"\n{C_BOLD}{C_YELLOW}⚡ RUNNING WEEKLY MOMENTUM SCANNER (FULL SUITE)...{C_RESET}\n")
+    initial_date = get_latest_date()
+    print_banner(initial_date)
+    print(f"\n{C_BOLD}{C_YELLOW}⚡ RUNNING WEEKLY MOMENTUM SCANNER (AUTO-UPDATING UNIVERSE)...{C_RESET}\n")
 
     scanner = PydroidScanner(BASE_DIR)
     top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(
-        as_of_date=latest_date,
+        as_of_date=None,
+        auto_update_universe=True,
         top_n=20,
         export_csv=True,
         export_excel=True
     )
 
+    scanned_date = get_latest_date()
     tearsheet = format_screener_tearsheet(
-        top_df, breadth, sectors, regime, latest_date,
+        top_df, breadth, sectors, regime, scanned_date,
         top_etf_df=top_etf, delivery_df=deliv
     )
     print(tearsheet)
 
     print(f"\n{C_GREEN}✓ Scan completed successfully!{C_RESET}")
+    print(f"  • Scanned Market Date: {C_BOLD}{C_GREEN}{scanned_date}{C_RESET}")
     print(f"  • Screener CSV: {BASE_DIR / 'reports' / 'screener_output_live.csv'}")
-    print(f"  • Institutional 12-Sheet Excel: {BASE_DIR / 'reports' / f'MIP1_Momentum_Scanner_{latest_date}.xlsx'}")
+    print(f"  • Institutional 12-Sheet Excel: {BASE_DIR / 'reports' / f'MIP1_Momentum_Scanner_{scanned_date}.xlsx'}")
     print(f"  • Market Breadth: {BASE_DIR / 'reports' / 'market_breadth_live.json'}")
     print(f"  • Sector Rotation: {BASE_DIR / 'reports' / 'sector_rotation_live.json'}")
 
