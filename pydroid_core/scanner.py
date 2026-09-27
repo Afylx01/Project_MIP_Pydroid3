@@ -163,13 +163,15 @@ class PydroidScanner:
         bars["ret_252"] = bars.groupby("symbol")["close"].transform(
             lambda s: s / s.shift(252) - 1.0
         )
-        bars["ret_1y"] = bars["ret_252"]
+        bars["ret_1y"] = bars["ret_252"] * 100.0
         bars["ret_21"] = bars.groupby("symbol")["close"].transform(
             lambda s: s / s.shift(21) - 1.0
         )
         bars["ret_63"] = bars.groupby("symbol")["close"].transform(
             lambda s: s / s.shift(63) - 1.0
         )
+        bars["ret_1m"] = bars["ret_21"] * 100.0
+        bars["ret_3m"] = bars["ret_63"] * 100.0
         bars["sector"] = bars["symbol"].map(lambda sym: self.sector_map.get(sym, "OTHER"))
 
         # Volatility & Volar Score
@@ -302,6 +304,7 @@ class PydroidScanner:
                     top_etf_df=top_etf_df,
                     market_bullish=market_bullish,
                     universe_label=u_label,
+                    bars_df=bars,
                 )
                 self.log(f"Generated 12-sheet Excel workbook: {excel_file}")
             except Exception as e:
@@ -357,7 +360,8 @@ def format_screener_tearsheet(
     lines.append(f"  {'Rank':<5}{'Symbol':<13}{'Close (₹)':<11}{'Stop Loss':<11}{'Sector':<12}{'Volar':<7}{'1Y Ret':<9}{'RRG Quad'}")
     lines.append("  " + "-" * 76)
     for _, row in top_df.iterrows():
-        ret_1y_pct = row['ret_1y'] * 100.0 if 'ret_1y' in row else 0.0
+        val = float(row.get('ret_1y', 0.0))
+        ret_1y_pct = val if abs(val) > 5.0 or val == 0.0 else val * 100.0
         sl_val = row.get('stop_loss', row['close'] * 0.94)
         lines.append(
             f"  {int(row['rank']):<5}{row['symbol']:<13}{row['close']:<11.2f}{sl_val:<11.2f}{row['sector']:<12}"

@@ -166,9 +166,29 @@ class SectorRotationEngine:
             if n_stocks == 0:
                 continue
 
-            ret_1m = float(sec_df["ret_1m"].mean()) if "ret_1m" in sec_df.columns else 0.0
-            ret_3m = float(sec_df["ret_3m"].mean()) if "ret_3m" in sec_df.columns else 0.0
-            ret_1y = float(sec_df["ret_1y"].mean()) if "ret_1y" in sec_df.columns else 0.0
+            if "ret_1m" in sec_df.columns:
+                m1 = float(sec_df["ret_1m"].mean())
+                ret_1m = m1 if abs(m1) > 0.05 or m1 == 0.0 else m1 * 100.0
+            elif "ret_21" in sec_df.columns:
+                ret_1m = float((sec_df["ret_21"] * 100.0).mean())
+            else:
+                ret_1m = 0.0
+
+            if "ret_3m" in sec_df.columns:
+                m3 = float(sec_df["ret_3m"].mean())
+                ret_3m = m3 if abs(m3) > 0.05 or m3 == 0.0 else m3 * 100.0
+            elif "ret_63" in sec_df.columns:
+                ret_3m = float((sec_df["ret_63"] * 100.0).mean())
+            else:
+                ret_3m = 0.0
+
+            if "ret_1y" in sec_df.columns:
+                my = float(sec_df["ret_1y"].mean())
+                ret_1y = my if abs(my) > 5.0 or my == 0.0 else my * 100.0
+            elif "ret_252" in sec_df.columns:
+                ret_1y = float((sec_df["ret_252"] * 100.0).mean())
+            else:
+                ret_1y = 0.0
 
             alpha_1m = ret_1m - bm_returns["bm_ret_1m"]
             alpha_3m = ret_3m - bm_returns["bm_ret_3m"]

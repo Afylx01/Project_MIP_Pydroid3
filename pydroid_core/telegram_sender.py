@@ -226,7 +226,8 @@ def format_telegram_alert(
         sym = r["symbol"]
         px = float(r.get("close", 0.0))
         volar = float(r.get("volar_score", 0.0))
-        ret_1y = float(r.get("ret_1y", r.get("return_252d", 0.0) * 100))
+        ret_val = float(r.get("ret_1y", 0.0) or r.get("return_252d", 0.0))
+        ret_1y = ret_val if abs(ret_val) > 5.0 or ret_val == 0.0 else ret_val * 100.0
         tv_url = f"https://in.tradingview.com/chart/?symbol=NSE:{sym}"
 
         d_info = dmap.get(sym, {})

@@ -28,7 +28,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from .data_engine import get_base_dir
+from .data_engine import get_base_dir, load_bars, load_symbol_sector_map
 
 # Institutional Color Palette
 PRIMARY_BLUE = "1F4E79"
@@ -64,24 +64,43 @@ class InstitutionalExcelGenerator:
         top_etf_df: Optional[pd.DataFrame] = None,
         market_bullish: bool = True,
         universe_label: str = "NIFTY 500",
+        bars_df: Optional[pd.DataFrame] = None,
     ) -> Path:
         """Assembles and formats all 12 sheets into the destination Excel file."""
         excel_path = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}.xlsx"
+
+        # Ensure bars_df is available for 30d/60d history tabs
+        if bars_df is None or bars_df.empty:
+            try:
+                target_dt = datetime.datetime.strptime(as_of_date, "%Y-%m-%d")
+                start_str = (target_dt - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
+                bars_df = load_bars(start_date=start_str, end_date=as_of_date, include_delisted=False)
+                smap = load_symbol_sector_map()
+                bars_df["sector"] = bars_df["symbol"].map(smap).fillna("INFRA_MEDIA")
+                bars_df = bars_df.sort_values(by=["symbol", "date"]).reset_index(drop=True)
+                bars_df["ema_200"] = bars_df.groupby("symbol")["close"].transform(lambda s: s.ewm(span=200, adjust=True, min_periods=min(50, len(s))).mean())
+                bars_df["ema_50"] = bars_df.groupby("symbol")["close"].transform(lambda s: s.ewm(span=50, adjust=True, min_periods=min(20, len(s))).mean())
+                bars_df["ema_20"] = bars_df.groupby("symbol")["close"].transform(lambda s: s.ewm(span=20, adjust=True, min_periods=min(10, len(s))).mean())
+                bars_df["high_252"] = bars_df.groupby("symbol")["high"].transform(lambda s: s.rolling(252, min_periods=min(50, len(s))).max())
+                bars_df["low_252"] = bars_df.groupby("symbol")["low"].transform(lambda s: s.rolling(252, min_periods=min(50, len(s))).min())
+                bars_df["ret_1m"] = bars_df.groupby("symbol")["close"].transform(lambda s: s / s.shift(21) - 1.0) * 100.0
+            except Exception:
+                bars_df = None
 
         # 1. Build DataFrame tabs
         dash_meta, dash_rot, dash_rrg, dash_stk, dash_etf, layout = self._build_dashboard_frames(
             as_of_date, screener_df, top_candidates_df, breadth_data, sector_data, top_etf_df, market_bullish, universe_label
         )
         rat_df = self._build_strategy_rationale_df(screener_df)
-        sec_df = self._build_sector_rotation_df(sector_data)
-        ind_df = self._build_industry_ranking_df(sector_data)
-        hist_df = self._build_industry_history_df(as_of_date)
+        sec_df = self._build_sector_rotation_df(sector_data, screener_df)
+        ind_df = self._build_industry_ranking_df(sector_data, screener_df)
+        hist_df = self._build_industry_history_df(as_of_date, bars_df)
         stock_df = self._build_stock_ranking_df(screener_df, delivery_df)
         cand_df = self._build_candidates_df(top_candidates_df, delivery_df, market_bullish)
         deliv_sheet_df = self._build_highest_delivery_df(delivery_df, screener_df)
         etf_sheet_df = self._build_etf_ranking_df(etf_ranking_df)
         perf_sum, perf_det = self._build_picks_performance_df()
-        breadth_hist_df = self._build_breadth_history_df()
+        breadth_hist_df = self._build_breadth_history_df(as_of_date, bars_df, universe_label)
         config_df = self._build_config_df(as_of_date, excel_path, universe_label)
 
         # 2. Write raw sheets using pd.ExcelWriter
@@ -181,7 +200,7 @@ class InstitutionalExcelGenerator:
                 "Sector": r.get("sector", "OTHER"),
                 "Close Price": round(float(r.get("close", 0.0)), 2),
                 "Volar Score": round(float(r.get("volar_score", 0.0)), 3),
-                "1Y Ret %": round(float(r.get("ret_1y", 0.0) or r.get("return_252d", 0.0) * 100), 1),
+                "1Y Ret %": round(float(r.get("ret_1y", 0.0) if abs(float(r.get("ret_1y", 0.0))) > 5.0 or float(r.get("ret_1y", 0.0)) == 0.0 else float(r.get("ret_1y", 0.0)) * 100), 1),
                 "RRG": r.get("rrg_quadrant", "WEAKENING"),
                 "TradingView": f"https://in.tradingview.com/chart/?symbol=NSE:{sym}",
             })
@@ -251,32 +270,110 @@ class InstitutionalExcelGenerator:
         ]
         return pd.DataFrame(rows, columns=["Parameter / Factor", "Setting / Evidence", "Quant Rationale (ELI5)", "Empirical Proof / Verdict"])
 
-    def _build_sector_rotation_df(self, sector_data):
+    def _build_sector_rotation_df(self, sector_data, screener_df=None):
         sec_list = sector_data.get("sectors", [])
+
+        leaders_map = {}
+        if screener_df is not None and not screener_df.empty and "sector" in screener_df.columns:
+            for sec, grp in screener_df.groupby("sector"):
+                top3 = grp.sort_values(by="volar_score", ascending=False)["symbol"].head(3).tolist()
+                leaders_map[str(sec)] = ", ".join(top3)
+
         rows = []
         for idx, s in enumerate(sec_list, 1):
+            sec = s.get("sector", "")
             q = s.get("rrg_quadrant", "UNKNOWN")
             act = "OVERWEIGHT" if q == "LEADING" else ("ACCUMULATE" if q == "IMPROVING" else ("REDUCE" if q == "WEAKENING" else "AVOID"))
             rows.append({
                 "Rank": idx,
-                "Sector": s.get("sector", ""),
-                "Total Scrips": s.get("total_symbols", 0),
-                "Breadth % (>200EMA)": s.get("pct_above_200ema", 0.0),
+                "Sector": sec,
+                "Industry Name": s.get("name", sec),
+                "Total Scrips": s.get("stock_count", s.get("total_symbols", 0)),
+                "Top 3 Leaders": leaders_map.get(sec, ""),
+                "Breadth % (>200EMA)": s.get("breadth_200_pct", s.get("pct_above_200ema", 0.0)),
                 "1M Return %": s.get("ret_1m", 0.0),
                 "3M Return %": s.get("ret_3m", 0.0),
+                "1Y Return %": s.get("ret_1y", 0.0),
                 "Alpha 1M %": s.get("alpha_1m", 0.0),
                 "Alpha 3M %": s.get("alpha_3m", 0.0),
                 "RRG Quadrant": q,
                 "Action": act,
             })
-        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Rank", "Sector", "Total Scrips", "Breadth % (>200EMA)", "1M Return %", "3M Return %", "Alpha 1M %", "Alpha 3M %", "RRG Quadrant", "Action"])
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Rank", "Sector", "Industry Name", "Total Scrips", "Top 3 Leaders", "Breadth % (>200EMA)", "1M Return %", "3M Return %", "1Y Return %", "Alpha 1M %", "Alpha 3M %", "RRG Quadrant", "Action"])
 
-    def _build_industry_ranking_df(self, sector_data):
-        return self._build_sector_rotation_df(sector_data)
+    def _build_industry_ranking_df(self, sector_data, screener_df=None):
+        sec_list = sector_data.get("sectors", [])
 
-    def _build_industry_history_df(self, as_of_date):
-        rows = [{"Date": as_of_date, "Note": "30-Day sector breadth time series actively maintained in SQLite universe."}]
-        return pd.DataFrame(rows)
+        leaders_map = {}
+        if screener_df is not None and not screener_df.empty and "sector" in screener_df.columns:
+            for sec, grp in screener_df.groupby("sector"):
+                top3 = grp.sort_values(by="volar_score", ascending=False)["symbol"].head(3).tolist()
+                leaders_map[str(sec)] = ", ".join(top3)
+
+        rows = []
+        for idx, s in enumerate(sec_list, 1):
+            sec = s.get("sector", "")
+            q = s.get("rrg_quadrant", "UNKNOWN")
+            act = "OVERWEIGHT" if q == "LEADING" else ("ACCUMULATE" if q == "IMPROVING" else ("REDUCE" if q == "WEAKENING" else "AVOID"))
+            rows.append({
+                "Rank": idx,
+                "Sector": sec,
+                "Industry Name": s.get("name", sec),
+                "Total Scrips": s.get("stock_count", s.get("total_symbols", 0)),
+                "Composite Score": s.get("composite_score", 0.0),
+                "1M Return %": s.get("ret_1m", 0.0),
+                "3M Return %": s.get("ret_3m", 0.0),
+                "1Y Return %": s.get("ret_1y", 0.0),
+                "Alpha 1M %": s.get("alpha_1m", 0.0),
+                "Alpha 3M %": s.get("alpha_3m", 0.0),
+                "Breadth % (>200EMA)": s.get("breadth_200_pct", s.get("pct_above_200ema", 0.0)),
+                "Near 52w High %": s.get("near_high_pct", 0.0),
+                "RS-Ratio (RRG)": s.get("rrg_rs_ratio", 100.0),
+                "RS-Mom (RRG)": s.get("rrg_rs_momentum", 100.0),
+                "RRG Quadrant": q,
+                "Top 3 Leaders": leaders_map.get(sec, ""),
+                "Action": act,
+            })
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Rank", "Sector", "Industry Name", "Total Scrips", "Composite Score", "1M Return %", "3M Return %", "1Y Return %", "Alpha 1M %", "Alpha 3M %", "Breadth % (>200EMA)", "Near 52w High %", "RS-Ratio (RRG)", "RS-Mom (RRG)", "RRG Quadrant", "Top 3 Leaders", "Action"])
+
+    def _build_industry_history_df(self, as_of_date, bars_df=None):
+        """Computes daily 30-day sector breadth and return history time-series."""
+        if bars_df is None or bars_df.empty:
+            return pd.DataFrame(columns=["Date", "Sector", "Scrips", "% > 200 EMA", "1M Ret %", "52w Highs"])
+
+        all_dates = sorted(bars_df["date"].unique())
+        sub_dates = [d for d in all_dates if d <= as_of_date][-30:]
+        if not sub_dates:
+            return pd.DataFrame(columns=["Date", "Sector", "Scrips", "% > 200 EMA", "1M Ret %", "52w Highs"])
+
+        sub = bars_df[bars_df["date"].isin(sub_dates)].copy()
+        if "sector" not in sub.columns:
+            smap = load_symbol_sector_map()
+            sub["sector"] = sub["symbol"].map(smap).fillna("INFRA_MEDIA")
+
+        req = {"close", "ema_200", "high_252"}
+        if not req.issubset(set(sub.columns)):
+            return pd.DataFrame(columns=["Date", "Sector", "Scrips", "% > 200 EMA", "1M Ret %", "52w Highs"])
+
+        ret_col = "ret_1m" if "ret_1m" in sub.columns else ("ret_21" if "ret_21" in sub.columns else None)
+
+        def _calc_sec_hist(g):
+            n = len(g)
+            above_200 = (g["close"] > g["ema_200"]).mean() * 100.0 if "ema_200" in g.columns else 0.0
+            r1m = g[ret_col].mean() if ret_col else 0.0
+            if ret_col == "ret_21" and abs(r1m) < 0.5:
+                r1m *= 100.0
+            new_highs = (g["close"] >= 0.99 * g["high_252"]).sum() if "high_252" in g.columns else 0
+            return pd.Series({
+                "Scrips": n,
+                "% > 200 EMA": round(above_200, 1),
+                "1M Ret %": round(r1m, 2),
+                "52w Highs": int(new_highs),
+            })
+
+        hist = sub.groupby(["date", "sector"]).apply(_calc_sec_hist, include_groups=False).reset_index()
+        hist = hist.rename(columns={"date": "Date", "sector": "Sector"})
+        return hist.sort_values(by=["Date", "Sector"], ascending=[False, True]).reset_index(drop=True)
 
     def _build_stock_ranking_df(self, screener_df, delivery_df):
         dmap = {}
@@ -293,7 +390,7 @@ class InstitutionalExcelGenerator:
                 "Sector": r.get("sector", "OTHER"),
                 "Close Price": round(float(r.get("close", 0.0)), 2),
                 "Volar Score": round(float(r.get("volar_score", 0.0)), 3),
-                "1Y Ret %": round(float(r.get("ret_1y", 0.0) or r.get("return_252d", 0.0) * 100), 1),
+                "1Y Ret %": round(float(r.get("ret_1y", 0.0) if abs(float(r.get("ret_1y", 0.0))) > 5.0 or float(r.get("ret_1y", 0.0)) == 0.0 else float(r.get("ret_1y", 0.0)) * 100), 1),
                 "From 52w High %": round(float(r.get("drawdown_from_high", 0.0) or (1.0 - r.get("close", 0.0) / max(0.01, r.get("high_252", 1.0))) * 100), 1),
                 "Vs EMA-200 %": round(float((r.get("close", 0.0) / max(0.01, r.get("ema_200", 1.0)) - 1.0) * 100), 1),
                 "Delivery %": d_info.get("deliv_per", np.nan),
@@ -405,9 +502,51 @@ class InstitutionalExcelGenerator:
         except Exception:
             return pd.DataFrame(), pd.DataFrame()
 
-    def _build_breadth_history_df(self):
-        rows = [{"Note": "Historical breadth logs stored in reports/market_breadth_live.json."}]
-        return pd.DataFrame(rows)
+    def _build_breadth_history_df(self, as_of_date: str, bars_df: Optional[pd.DataFrame] = None, universe_label: str = "NIFTY 500") -> pd.DataFrame:
+        """Computes daily market-wide breadth history across the last 60 sessions."""
+        if bars_df is None or bars_df.empty:
+            return pd.DataFrame(columns=["Date", "Universe", "Active Scrips", "% > 200 EMA", "% > 50 EMA", "% > 20 EMA", "% Near 52wH", "52w Highs", "52w Lows", "Net Highs", "Breadth Regime"])
+
+        all_dates = sorted(bars_df["date"].unique())
+        sub_dates = [d for d in all_dates if d <= as_of_date][-60:]
+        if not sub_dates:
+            return pd.DataFrame(columns=["Date", "Universe", "Active Scrips", "% > 200 EMA", "% > 50 EMA", "% > 20 EMA", "% Near 52wH", "52w Highs", "52w Lows", "Net Highs", "Breadth Regime"])
+
+        sub = bars_df[bars_df["date"].isin(sub_dates)].copy()
+
+        def _calc_breadth_row(g):
+            n = len(g)
+            p200 = round((g["close"] > g["ema_200"]).mean() * 100.0, 1) if "ema_200" in g.columns else 0.0
+            p50 = round((g["close"] > g["ema_50"]).mean() * 100.0, 1) if "ema_50" in g.columns else 0.0
+            p20 = round((g["close"] > g["ema_20"]).mean() * 100.0, 1) if "ema_20" in g.columns else 0.0
+            pnear = round((g["close"] >= 0.80 * g["high_252"]).mean() * 100.0, 1) if "high_252" in g.columns else 0.0
+            nh = int((g["close"] >= 0.99 * g["high_252"]).sum()) if "high_252" in g.columns else 0
+            nl = int((g["close"] <= 1.01 * g["low_252"]).sum()) if "low_252" in g.columns else 0
+            net = nh - nl
+
+            if p200 >= 60.0 and p50 >= 55.0:
+                regime = "🟢 STRONG EXPANSION"
+            elif p200 < 40.0 or (p200 < 50.0 and net < 0):
+                regime = "🔴 CONTRACTION / DEFENSIVE"
+            else:
+                regime = "🟡 SELECTIVE / NEUTRAL"
+
+            return pd.Series({
+                "Universe": universe_label,
+                "Active Scrips": n,
+                "% > 200 EMA": p200,
+                "% > 50 EMA": p50,
+                "% > 20 EMA": p20,
+                "% Near 52wH": pnear,
+                "52w Highs": nh,
+                "52w Lows": nl,
+                "Net Highs": net,
+                "Breadth Regime": regime,
+            })
+
+        b_hist = sub.groupby("date").apply(_calc_breadth_row, include_groups=False).reset_index()
+        b_hist = b_hist.rename(columns={"date": "Date"})
+        return b_hist.sort_values(by="Date", ascending=False).reset_index(drop=True)
 
     def _build_config_df(self, as_of_date, excel_path, universe_label="NIFTY 500"):
         rows = [
