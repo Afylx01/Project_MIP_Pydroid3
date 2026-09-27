@@ -290,9 +290,30 @@ class PydroidScanner:
             top_df[avail_cols].to_csv(out_csv, index=False)
             self.log(f"Exported screener candidates to {out_csv}")
 
+        # 6. Generate Complete Visual Artifacts Suite (Charts & Tearsheets)
+        chart_paths = {}
+        try:
+            from .visuals import generate_all_visuals
+            self.log(f"Generating publication-quality charts & tearsheets [{u_label}]...")
+            ind_hist_df = self.excel_generator._build_industry_history_df(target_date, bars)
+            b_hist_df = self.excel_generator._build_breadth_history_df(target_date, bars, u_label)
+            chart_paths = generate_all_visuals(
+                as_of_date=target_date,
+                breadth_data=breadth_results,
+                sector_data=sector_results,
+                top_df=top_df,
+                ind_hist_df=ind_hist_df,
+                breadth_hist_df=b_hist_df,
+                universe_label=u_label,
+            )
+            top_df.attrs["chart_paths"] = chart_paths
+        except Exception as e:
+            self.log(f"Warning: Visuals generation skipped ({e})")
+
+        excel_file = None
         if export_excel:
             try:
-                self.log("Compiling institutional 12-sheet Excel workbook...")
+                self.log("Compiling institutional 12-sheet Excel workbook (with embedded charts)...")
                 excel_file = self.excel_generator.generate_workbook(
                     as_of_date=target_date,
                     screener_df=snap[snap["pass_all_filters"]].sort_values("volar_score", ascending=False) if not snap[snap["pass_all_filters"]].empty else top_df,
@@ -305,8 +326,10 @@ class PydroidScanner:
                     market_bullish=market_bullish,
                     universe_label=u_label,
                     bars_df=bars,
+                    chart_paths=chart_paths,
                 )
                 self.log(f"Generated 12-sheet Excel workbook: {excel_file}")
+                top_df.attrs["excel_path"] = excel_file
             except Exception as e:
                 self.log(f"Warning: Excel workbook compilation failed: {e}")
 

@@ -18,6 +18,7 @@ Generates the complete 12-sheet institutional Excel workbook:
 """
 
 import os
+import shutil
 import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -65,9 +66,12 @@ class InstitutionalExcelGenerator:
         market_bullish: bool = True,
         universe_label: str = "NIFTY 500",
         bars_df: Optional[pd.DataFrame] = None,
+        chart_paths: Optional[Dict[str, Path]] = None,
     ) -> Path:
         """Assembles and formats all 12 sheets into the destination Excel file."""
-        excel_path = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}.xlsx"
+        u_slug = str(universe_label).strip().replace(" ", "").replace("(", "").replace(")", "").replace("-", "_")
+        excel_path = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}_{u_slug}.xlsx"
+        canonical_excel = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}.xlsx"
 
         # Ensure bars_df is available for 30d/60d history tabs
         if bars_df is None or bars_df.empty:
@@ -131,8 +135,18 @@ class InstitutionalExcelGenerator:
             breadth_hist_df.to_excel(writer, sheet_name="Breadth History", index=False)
             config_df.to_excel(writer, sheet_name="Configuration", index=False)
 
-        # 3. Apply Professional openpyxl Styling
-        self._apply_workbook_styles(excel_path, as_of_date, layout, market_bullish)
+        # 3. Apply Professional openpyxl Styling & Embed Charts
+        self._apply_workbook_styles(excel_path, as_of_date, layout, market_bullish, chart_paths=chart_paths, universe_label=universe_label)
+
+        # Copy to canonical path and deliverables
+        try:
+            shutil.copyfile(excel_path, canonical_excel)
+            deliv_dir = Path("/sdcard/Documents/deliverables")
+            deliv_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(excel_path, deliv_dir / excel_path.name)
+            shutil.copyfile(canonical_excel, deliv_dir / canonical_excel.name)
+        except Exception:
+            pass
 
         return excel_path
 
@@ -563,7 +577,15 @@ class InstitutionalExcelGenerator:
         ]
         return pd.DataFrame(rows, columns=["Parameter", "Value"])
 
-    def _apply_workbook_styles(self, excel_path: Path, as_of_date: str, layout: dict, market_bullish: bool):
+    def _apply_workbook_styles(
+        self,
+        excel_path: Path,
+        as_of_date: str,
+        layout: dict,
+        market_bullish: bool,
+        chart_paths: Optional[Dict[str, Path]] = None,
+        universe_label: str = "NIFTY 500",
+    ):
         """Applies headers, tab colors, number formatting, borders, and hyperlinks."""
         wb = openpyxl.load_workbook(str(excel_path))
 
@@ -707,5 +729,50 @@ class InstitutionalExcelGenerator:
         for sname in ["Sector Rotation", "Industry Ranking", "Industry History 30d", "Stock Ranking", "Top Candidates", "Pick Performance", "Breadth History", "Configuration"]:
             if sname in wb.sheetnames:
                 style_generic_sheet(wb[sname], [1], freeze="A2")
+
+        # ── Embed Dedicated Charts Sheet ──
+        try:
+            from openpyxl.drawing.image import Image as OpenpyxlImage
+            if "Charts" not in wb.sheetnames:
+                ws_c = wb.create_sheet("Charts")
+            else:
+                ws_c = wb["Charts"]
+            ws_c.sheet_properties.tabColor = "E65100"  # Vibrant Orange
+            if hasattr(ws_c, "views") and hasattr(ws_c.views, "sheetView") and ws_c.views.sheetView:
+                ws_c.views.sheetView[0].showGridLines = True
+
+            ws_c.merge_cells("A1:K1")
+            ws_c["A1"] = f"PROJECT MIP — QUANTITATIVE CHARTS & VISUAL ANALYTICS ({as_of_date})"
+            ws_c["A1"].font = Font(name="Arial", size=13, bold=True, color="FFFFFF")
+            ws_c["A1"].fill = PatternFill("solid", fgColor=PRIMARY_BLUE)
+            ws_c["A1"].alignment = Alignment(horizontal="center", vertical="center")
+            ws_c.row_dimensions[1].height = 28
+
+            ws_c.merge_cells("A2:K2")
+            ws_c["A2"] = f"Target Universe: {universe_label}  |  Standalone Mobile Pydroid 3 Edition"
+            ws_c["A2"].font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+            ws_c["A2"].fill = PatternFill("solid", fgColor=DARK_NAVY)
+            ws_c["A2"].alignment = Alignment(horizontal="left", vertical="center")
+            ws_c.row_dimensions[2].height = 20
+
+            chart_specs = [
+                ("1. QUANTITATIVE MARKET OVERVIEW & BREADTH PARTICIPATION", chart_paths.get("overview_png") if chart_paths else None, "market_overview_chart.png"),
+                ("2. SECTOR ROTATION RRG DYNAMICS & 30-DAY TRAJECTORY", chart_paths.get("sector_rrg_png") if chart_paths else None, "sector_rotation_history.png"),
+                ("3. MARKET BREADTH 60-DAY TRENDS & 52-WEEK NET HIGHS", chart_paths.get("breadth_trend_png") if chart_paths else None, "market_breadth_history.png"),
+            ]
+
+            curr_row = 4
+            for title, p_target, p_fallback in chart_specs:
+                img_file = p_target if (p_target and Path(p_target).exists()) else (self.reports_dir / p_fallback if (self.reports_dir / p_fallback).exists() else None)
+                if img_file and Path(img_file).exists():
+                    ws_c.cell(curr_row, 1, title).font = Font(name="Arial", size=11, bold=True, color=PRIMARY_BLUE)
+                    ws_c.row_dimensions[curr_row].height = 22
+                    img = OpenpyxlImage(str(img_file))
+                    img.width = 960
+                    img.height = 360
+                    ws_c.add_image(img, f"A{curr_row + 1}")
+                    curr_row += 22
+        except Exception as e:
+            print(f"Warning: Chart embedding in Excel skipped ({e})")
 
         wb.save(str(excel_path))

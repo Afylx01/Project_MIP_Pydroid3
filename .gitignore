@@ -13,12 +13,8 @@ __pycache__/
 .env.local
 
 # Reports (regenerated on demand)
-reports/*.csv
-reports/*.json
-reports/*.png
-reports/*.html
-reports/*.txt
-reports/*.xlsx
+reports/**
+!reports/.gitkeep
 
 # Raw data cache
 data/raw_reference/

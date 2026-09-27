@@ -116,10 +116,54 @@ def run_scanner_flow(interactive: bool = True, universe_mode: Optional[str] = No
     print(f"\n{C_GREEN}✓ Scan completed successfully!{C_RESET}")
     print(f"  • Scanned Market Date: {C_BOLD}{C_GREEN}{scanned_date}{C_RESET}")
     print(f"  • Target Universe:     {C_BOLD}{C_CYAN}{u_label}{C_RESET}")
-    print(f"  • Screener CSV: {BASE_DIR / 'reports' / 'screener_output_live.csv'}")
-    print(f"  • Institutional 12-Sheet Excel: {BASE_DIR / 'reports' / f'MIP1_Momentum_Scanner_{scanned_date}.xlsx'}")
-    print(f"  • Market Breadth: {BASE_DIR / 'reports' / 'market_breadth_live.json'}")
-    print(f"  • Sector Rotation: {BASE_DIR / 'reports' / 'sector_rotation_live.json'}")
+    print(f"  • Screener CSV:        {BASE_DIR / 'reports' / 'screener_output_live.csv'}")
+    excel_path = top_df.attrs.get("excel_path") or (BASE_DIR / 'reports' / f'MIP1_Momentum_Scanner_{scanned_date}.xlsx')
+    print(f"  • Institutional Excel: {excel_path}")
+    print(f"  • Market Breadth JSON: {BASE_DIR / 'reports' / 'market_breadth_live.json'}")
+    print(f"  • Sector Rotation JSON:{BASE_DIR / 'reports' / 'sector_rotation_live.json'}")
+
+    # Automated Executive Telegram Dispatch
+    print(f"\n{C_BOLD}{C_BLUE}📱 DISPATCHING AUTOMATED TELEGRAM DELIVERABLES...{C_RESET}")
+    try:
+        from pydroid_core.telegram_sender import PydroidTelegramSender, format_telegram_alert
+        sender = PydroidTelegramSender()
+        if sender.is_configured():
+            msg = format_telegram_alert(
+                top_df, breadth, sectors, regime, scanned_date,
+                top_etf_df=top_etf, delivery_df=deliv, universe_label=u_label
+            )
+            print("  • Sending executive alert message...")
+            sender.send_message(msg)
+
+            # Send charts
+            chart_paths = top_df.attrs.get("chart_paths", {})
+            ov_chart = chart_paths.get("overview_png") or (BASE_DIR / "reports" / "market_overview_chart.png")
+            sec_chart = chart_paths.get("sector_rrg_png") or (BASE_DIR / "reports" / "sector_rotation_history.png")
+
+            if ov_chart and Path(ov_chart).exists():
+                print(f"  • Sending market overview chart ({Path(ov_chart).name})...")
+                sender.send_photo(Path(ov_chart), caption=f"📊 <b>MIP-1 Market Overview Dashboard ({scanned_date}) [{u_label}]</b>")
+
+            if sec_chart and Path(sec_chart).exists():
+                print(f"  • Sending sector rotation RRG chart ({Path(sec_chart).name})...")
+                sender.send_photo(Path(sec_chart), caption=f"🔄 <b>NSE Primary Sector RRG Dynamics & 30D Trajectory [{u_label}]</b>")
+
+            # Send Excel workbook
+            if excel_path and Path(excel_path).exists():
+                print(f"  • Sending institutional 12-sheet Excel ({Path(excel_path).name})...")
+                sender.send_document(Path(excel_path), caption=f"📈 <b>MIP-1 Institutional Workbook v5.5.1 ({scanned_date}) [{u_label}]</b>")
+
+            # Send Interactive Plotly HTML Tearsheet
+            html_path = chart_paths.get("tearsheet_html") or (BASE_DIR / "reports" / "mip_mobile_tearsheet.html")
+            if html_path and Path(html_path).exists():
+                print(f"  • Sending interactive tearsheet ({Path(html_path).name})...")
+                sender.send_document(Path(html_path), caption=f"🌐 <b>Interactive HTML Tearsheet ({scanned_date}) [{u_label}]</b>")
+
+            print(f"{C_GREEN}✓ Telegram automated dispatch completed successfully!{C_RESET}")
+        else:
+            print(f"{C_YELLOW}⚠ Telegram bot credentials missing. Automated dispatch skipped.{C_RESET}")
+    except Exception as e:
+        print(f"{C_RED}⚠ Telegram automated dispatch encountered error: {e}{C_RESET}")
 
     if interactive:
         input(f"\n{C_GRAY}Press Enter to return to menu...{C_RESET}")
