@@ -1,11 +1,12 @@
 """
 Project MIP Pydroid 3: Pure-Python Telegram Bot Dispatcher
-Directive: DIR-PROD-PYDROID3-PORT-01
+Directive: DIR-PROD-PYDROID3-PARITY-01 (MIP-1 v5.5.1 Reporting Style)
 
 Pure Python REST client for Telegram Bot API:
-  - Uses curl_cffi with Chrome TLS impersonation if available, else requests/urllib.
+  - Dispatches formatted HTML/Markdown alerts.
+  - Sends high-resolution PNG charts (sendPhoto) and 12-sheet Excel workbooks (sendDocument).
+  - Includes TradingView hyperlinks, delivery accumulation tags, and Momentify ETF picks.
   - Zero external binary dependency (/usr/local/bin/telegram-notify not needed).
-  - Sends text messages, high-res PNG charts, and documents/tearsheets.
 """
 
 import os
@@ -98,29 +99,30 @@ class PydroidTelegramSender:
                 req = urllib.request.Request(
                     url,
                     data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json"},
                 )
                 with urllib.request.urlopen(req, timeout=15) as r:
-                    res_data = json.loads(r.read().decode())
+                    res_data = json.loads(r.read().decode("utf-8"))
 
             if res_data.get("ok"):
-                print(f"✓ Telegram message sent successfully (Msg ID: {res_data.get('result', {}).get('message_id')})")
+                msg_id = res_data.get('result', {}).get('message_id')
+                print(f"✓ Telegram message sent successfully (Msg ID: {msg_id})")
                 return True
             else:
                 print(f"✗ Telegram API Error: {res_data.get('description')}")
                 return False
         except Exception as e:
-            print(f"✗ Telegram transmission failed: {e}")
+            print(f"✗ Telegram request error: {e}")
             return False
 
     def send_photo(self, photo_path: Path, caption: Optional[str] = None, dry_run: bool = False) -> bool:
-        """Sends a photo/chart directly to Telegram."""
+        """Uploads and dispatches a PNG chart or image."""
+        photo_path = Path(photo_path)
         if dry_run:
             print(f"[Telegram] DRY RUN — Would dispatch photo: {photo_path} (Caption: {caption})")
             return True
 
         if not self.is_configured() or not photo_path.exists():
-            print(f"⚠ Photo dispatch cancelled: configured={self.is_configured()}, exists={photo_path.exists()}")
             return False
 
         url = f"{self.api_url}/sendPhoto"
@@ -131,10 +133,10 @@ class PydroidTelegramSender:
                 if caption:
                     data["caption"] = caption
                     data["parse_mode"] = "HTML"
-                files = {"photo": f}
-                resp = requests.post(url, data=data, files=files, timeout=30)
+                files = {"photo": (photo_path.name, f)}
+                resp = requests.post(url, data=data, files=files, timeout=25)
                 res_data = resp.json()
-            
+
             if res_data.get("ok"):
                 print(f"✓ Telegram photo sent: {photo_path.name}")
                 return True
@@ -146,7 +148,8 @@ class PydroidTelegramSender:
             return False
 
     def send_document(self, doc_path: Path, caption: Optional[str] = None, dry_run: bool = False) -> bool:
-        """Sends a document or HTML tearsheet directly to Telegram."""
+        """Uploads and dispatches an Excel workbook or HTML tearsheet."""
+        doc_path = Path(doc_path)
         if dry_run:
             print(f"[Telegram] DRY RUN — Would dispatch document: {doc_path} (Caption: {caption})")
             return True
@@ -163,7 +166,7 @@ class PydroidTelegramSender:
                     data["caption"] = caption
                     data["parse_mode"] = "HTML"
                 files = {"document": (doc_path.name, f)}
-                resp = requests.post(url, data=data, files=files, timeout=30)
+                resp = requests.post(url, data=data, files=files, timeout=45)
                 res_data = resp.json()
 
             if res_data.get("ok"):
@@ -182,39 +185,84 @@ def format_telegram_alert(
     breadth: Dict,
     sectors: Dict,
     regime: Dict,
-    as_of_date: str
+    as_of_date: str,
+    top_etf_df: Optional[pd.DataFrame] = None,
+    delivery_df: Optional[pd.DataFrame] = None,
 ) -> str:
-    """Formats institutional Telegram HTML message within 4,096 char limit."""
+    """Formats institutional Telegram HTML message with v5.5.1 rich sections."""
     tp = breadth.get("trend_participation", {})
     hp = breadth.get("high_proximity", {})
     nhl = breadth.get("net_highs_lows", {})
     b_reg = breadth.get("regime", {})
 
-    msg = f"🚀 <b>PROJECT MIP: WEEKLY MOMENTUM ALERT</b>\n"
-    msg += f"📅 <b>As of Date:</b> <code>{as_of_date}</code>\n"
+    dmap = {}
+    if delivery_df is not None and not delivery_df.empty:
+        dmap = delivery_df.set_index("symbol").to_dict(orient="index")
+
+    msg = f"🚀 <b>MIP-1 MOMENTUM SCANNER v5.5.1</b>\n"
+    msg += f"📅 <b>Date:</b> <code>{as_of_date}</code> | <b>Universe:</b> <code>NIFTY 500 PIT</code>\n"
     msg += f"🛡️ <b>Benchmark Regime:</b> {regime.get('label', 'N/A')}\n"
     msg += f"📊 <b>Market Breadth:</b> {b_reg.get('label', 'N/A')}\n\n"
 
+    # Breadth Metrics
     msg += f"📈 <b>BREADTH & TREND PARTICIPATION</b>\n"
-    msg += f"• <b>> 200 EMA:</b> {tp.get('pct_above_200_ema', 0)}% ({tp.get('count_above_200_ema', 0)}/{breadth.get('universe_size', 0)})\n"
-    msg += f"• <b>> 50 EMA:</b> {tp.get('pct_above_50_ema', 0)}% | <b>> 20 EMA:</b> {tp.get('pct_above_20_ema', 0)}%\n"
-    msg += f"• <b>Near 52w High:</b> {hp.get('pct_within_20pct_52wh', 0)}% (Within 20%)\n"
+    msg += f"• <b>> 200 EMA:</b> {tp.get('pct_above_200_ema', 0.0):.1f}% ({tp.get('count_above_200_ema', 0)}/{breadth.get('universe_size', 0)})\n"
+    msg += f"• <b>> 50 EMA:</b> {tp.get('pct_above_50_ema', 0.0):.1f}% | <b>> 20 EMA:</b> {tp.get('pct_above_20_ema', 0.0):.1f}%\n"
+    msg += f"• <b>Near 52w High:</b> {hp.get('pct_within_20pct_52wh', 0.0):.1f}% (Within 20%)\n"
     msg += f"• <b>52w Net Highs:</b> +{nhl.get('new_52w_highs', 0)} / -{nhl.get('new_52w_lows', 0)} (Net: {nhl.get('net_highs_lows', 0):+d})\n\n"
 
-    msg += f"🔄 <b>SECTOR ROTATION (TOP LEADING)</b>\n<pre>"
+    # Top Sector Rotation
+    msg += f"🔄 <b>TOP MOMENTUM SECTORS</b>\n<pre>"
     msg += f"{'Rank':<4}{'Sector':<11}{'1M Ret':<8}{'Alpha':<8}{'Breadth'}\n"
     msg += "-" * 38 + "\n"
-    for s in sectors.get("sectors", [])[:5]:
+    for s in sectors.get("sectors", [])[:4]:
         msg += f"{s['rank']:<4}{s['sector']:<11}{s['ret_1m']:+5.1f}%  {s['alpha_1m']:+5.1f}%  {s['breadth_200_pct']:4.0f}%\n"
     msg += "</pre>\n"
 
-    msg += f"🏆 <b>TOP MOMENTUM ALLOCATIONS</b>\n<pre>"
-    msg += f"{'#':<3}{'Symbol':<12}{'Price':<9}{'Volar':<6}{'RRG'}\n"
-    msg += "-" * 38 + "\n"
-    for _, r in top_df.head(15).iterrows():
-        quad_code = r.get('rrg_quadrant', '')[:4]
-        msg += f"{int(r['rank']):<3}{r['symbol']:<12}{r['close']:<9.1f}{r['volar_score']:<6.2f}{quad_code}\n"
-    msg += "</pre>\n"
-    msg += f"<i>Generated standalone on Samsung Galaxy S23 via Pydroid 3</i>"
+    # Top 10 Stocks with TradingView hyperlinks and delivery tags
+    msg += f"🏆 <b>TOP MOMENTUM STOCKS (Volar Ranking)</b>\n"
+    for idx, (_, r) in enumerate(top_df.head(10).iterrows(), 1):
+        sym = r["symbol"]
+        px = float(r.get("close", 0.0))
+        volar = float(r.get("volar_score", 0.0))
+        ret_1y = float(r.get("ret_1y", r.get("return_252d", 0.0) * 100))
+        tv_url = f"https://in.tradingview.com/chart/?symbol=NSE:{sym}"
 
+        d_info = dmap.get(sym, {})
+        d_per = d_info.get("deliv_per")
+        d_times = d_info.get("deliv_times")
+        d_str = ""
+        if d_per is not None and pd.notna(d_per):
+            d_str = f" | Deliv: <code>{d_per:.0f}%</code>"
+            if d_times is not None and pd.notna(d_times) and d_times >= 1.5:
+                d_str += f" (<b>{d_times:.1f}x</b>)"
+
+        msg += f"<code>{idx:02d}.</code> <a href=\"{tv_url}\"><b>{sym}</b></a> — ₹{px:,.1f} | Volar: <code>{volar:.2f}</code> | 1Y: <code>{ret_1y:+.1f}%</code>{d_str}\n"
+
+    # Top 5 Momentify ALL-ONE ETFs
+    if top_etf_df is not None and not top_etf_df.empty:
+        msg += f"\n🎯 <b>MOMENTIFY ETF PICKS (ALL-ONE Non-Repeating)</b>\n"
+        for idx, (_, r) in enumerate(top_etf_df.head(5).iterrows(), 1):
+            sym = r["symbol"]
+            und = str(r.get("underlying", ""))[:32]
+            px = float(r.get("price", 0.0))
+            volar = float(r.get("volar_score", 0.0))
+            tv_url = f"https://in.tradingview.com/chart/?symbol=NSE:{sym}"
+            msg += f"<code>{idx:02d}.</code> <a href=\"{tv_url}\"><b>{sym}</b></a> — ₹{px:,.1f} | Volar: <code>{volar:.2f}</code> ({und})\n"
+
+    # Institutional Delivery Spikes (₹5Cr+)
+    if delivery_df is not None and not delivery_df.empty:
+        spikes = delivery_df[delivery_df["delivery_value_cr"].fillna(0) >= 5.0].sort_values("deliv_per", ascending=False).head(3)
+        if not spikes.empty:
+            msg += f"\n📦 <b>TOP INSTITUTIONAL DELIVERY SPIKES (₹5Cr+)</b>\n"
+            for _, r in spikes.iterrows():
+                sym = r["symbol"]
+                d_per = r.get("deliv_per", 0.0)
+                d_val = r.get("delivery_value_cr", 0.0)
+                act = r.get("deliv_action", "")
+                d_times = r.get("deliv_times")
+                t_str = f" ({d_times:.1f}x)" if pd.notna(d_times) else ""
+                msg += f"• <b>{sym}</b> {act}: <code>{d_per:.0f}%</code>{t_str} | ₹{d_val:.1f}Cr\n"
+
+    msg += f"\n<i>Generated natively on Samsung Galaxy S23 via Pydroid 3</i>"
     return msg

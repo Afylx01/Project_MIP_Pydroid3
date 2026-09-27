@@ -73,17 +73,22 @@ def run_scanner_flow(interactive: bool = True):
     print(f"\n{C_BOLD}{C_YELLOW}⚡ RUNNING WEEKLY MOMENTUM SCANNER (FULL SUITE)...{C_RESET}\n")
 
     scanner = PydroidScanner(BASE_DIR)
-    top_df, breadth, sectors, regime = scanner.run_scan(
+    top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(
         as_of_date=latest_date,
         top_n=20,
-        export_csv=True
+        export_csv=True,
+        export_excel=True
     )
 
-    tearsheet = format_screener_tearsheet(top_df, breadth, sectors, regime, latest_date)
+    tearsheet = format_screener_tearsheet(
+        top_df, breadth, sectors, regime, latest_date,
+        top_etf_df=top_etf, delivery_df=deliv
+    )
     print(tearsheet)
 
     print(f"\n{C_GREEN}✓ Scan completed successfully!{C_RESET}")
     print(f"  • Screener CSV: {BASE_DIR / 'reports' / 'screener_output_live.csv'}")
+    print(f"  • Institutional 12-Sheet Excel: {BASE_DIR / 'reports' / f'MIP1_Momentum_Scanner_{latest_date}.xlsx'}")
     print(f"  • Market Breadth: {BASE_DIR / 'reports' / 'market_breadth_live.json'}")
     print(f"  • Sector Rotation: {BASE_DIR / 'reports' / 'sector_rotation_live.json'}")
 
@@ -105,10 +110,13 @@ def run_telegram_preview():
     breadth_file = reports_dir / "market_breadth_live.json"
     sector_file = reports_dir / "sector_rotation_live.json"
 
+    scanner = PydroidScanner(BASE_DIR)
+    top_etf = None
+    deliv = None
+
     if not (screener_file.exists() and breadth_file.exists() and sector_file.exists()):
         print(f"{C_YELLOW}⚠ Live data not cached. Running scanner first...{C_RESET}")
-        scanner = PydroidScanner(BASE_DIR)
-        top_df, breadth, sectors, regime = scanner.run_scan(as_of_date=latest_date, top_n=20)
+        top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(as_of_date=latest_date, top_n=20)
     else:
         import pandas as pd
         top_df = pd.read_csv(screener_file)
@@ -116,10 +124,18 @@ def run_telegram_preview():
             breadth = json.load(f)
         with open(sector_file, "r", encoding="utf-8") as f:
             sectors = json.load(f)
-        scanner = PydroidScanner(BASE_DIR)
         regime = scanner.evaluate_regime(latest_date)
+        etf_file = reports_dir / "etf_top_picks.csv"
+        deliv_file = reports_dir / "delivery_analytics.csv"
+        if etf_file.exists():
+            top_etf = pd.read_csv(etf_file)
+        if deliv_file.exists():
+            deliv = pd.read_csv(deliv_file)
 
-    msg = format_telegram_alert(top_df, breadth, sectors, regime, latest_date)
+    msg = format_telegram_alert(
+        top_df, breadth, sectors, regime, latest_date,
+        top_etf_df=top_etf, delivery_df=deliv
+    )
     sender = PydroidTelegramSender()
     sender.send_message(msg, dry_run=True)
 
@@ -145,10 +161,17 @@ def run_telegram_dispatch():
 
     reports_dir = BASE_DIR / "reports"
     screener_file = reports_dir / "screener_output_live.csv"
-    if not screener_file.exists():
+    excel_file = reports_dir / f"MIP1_Momentum_Scanner_{latest_date}.xlsx"
+
+    scanner = PydroidScanner(BASE_DIR)
+    top_etf = None
+    deliv = None
+
+    if not screener_file.exists() or not excel_file.exists():
         print(f"{C_YELLOW}Running scanner to generate latest deliverables...{C_RESET}")
-        scanner = PydroidScanner(BASE_DIR)
-        top_df, breadth, sectors, regime = scanner.run_scan(as_of_date=latest_date, top_n=20)
+        top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(
+            as_of_date=latest_date, top_n=20, export_csv=True, export_excel=True
+        )
     else:
         import pandas as pd
         top_df = pd.read_csv(screener_file)
@@ -156,10 +179,18 @@ def run_telegram_dispatch():
             breadth = json.load(f)
         with open(reports_dir / "sector_rotation_live.json", "r", encoding="utf-8") as f:
             sectors = json.load(f)
-        scanner = PydroidScanner(BASE_DIR)
         regime = scanner.evaluate_regime(latest_date)
+        etf_file = reports_dir / "etf_top_picks.csv"
+        deliv_file = reports_dir / "delivery_analytics.csv"
+        if etf_file.exists():
+            top_etf = pd.read_csv(etf_file)
+        if deliv_file.exists():
+            deliv = pd.read_csv(deliv_file)
 
-    msg = format_telegram_alert(top_df, breadth, sectors, regime, latest_date)
+    msg = format_telegram_alert(
+        top_df, breadth, sectors, regime, latest_date,
+        top_etf_df=top_etf, delivery_df=deliv
+    )
     print("Dispatching executive alert message...")
     ok_msg = sender.send_message(msg)
 
@@ -168,7 +199,10 @@ def run_telegram_dispatch():
         print("Dispatching market overview chart PNG...")
         sender.send_photo(chart_png, caption=f"📊 Market Overview Chart — {latest_date}")
 
-    if screener_file.exists():
+    if excel_file.exists():
+        print("Dispatching institutional 12-sheet Excel workbook...")
+        sender.send_document(excel_file, caption=f"📑 Institutional 12-Sheet Momentum Workbook — {latest_date}")
+    elif screener_file.exists():
         print("Dispatching screener candidate CSV...")
         sender.send_document(screener_file, caption=f"📁 Screener Candidates — {latest_date}")
 
@@ -194,7 +228,7 @@ def run_visuals_generator():
     if not screener_file.exists():
         print(f"{C_YELLOW}Running scanner to generate latest metrics...{C_RESET}")
         scanner = PydroidScanner(BASE_DIR)
-        top_df, breadth, sectors, regime = scanner.run_scan(as_of_date=latest_date, top_n=20)
+        top_df, breadth, sectors, regime, *_ = scanner.run_scan(as_of_date=latest_date, top_n=20)
     else:
         import pandas as pd
         top_df = pd.read_csv(screener_file)
@@ -636,7 +670,144 @@ def run_database_audit():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# MAIN MENU (12 Options)
+# Option [13]: Definedge Momentify ALL-ONE ETF Momentum Scanner
+# ═══════════════════════════════════════════════════════════════════════
+def run_etf_scanner_flow():
+    clear_screen()
+    latest_date = get_latest_date()
+    print_banner(latest_date)
+    print(f"\n{C_BOLD}{C_CYAN}🎯 DEFINEDGE MOMENTIFY ALL-ONE ETF MOMENTUM SCANNER (TOP 7){C_RESET}\n")
+
+    from pydroid_core.etf_engine import ETFMomentumEngine
+
+    scanner = PydroidScanner(BASE_DIR)
+    regime = scanner.evaluate_regime(latest_date)
+    is_bullish = regime.get("is_normal_regime", True)
+
+    engine = ETFMomentumEngine(BASE_DIR)
+    universe = engine.get_all_one_universe()
+    print(f"Loaded Definedge ALL-ONE ETF Universe: {len(universe)} instruments.")
+    print(f"Market Regime: {regime.get('label', 'N/A')}")
+    print(f"{C_YELLOW}Computing ETF returns, Volar scores, and selecting top 7 non-repeating picks...{C_RESET}\n")
+
+    ranked_df, top_picks_df = engine.run_etf_scan(universe, market_bullish=is_bullish, as_of_date=latest_date)
+
+    print(f"{C_BOLD}{'=' * 76}{C_RESET}")
+    print(f"{C_BOLD} TOP 7 NON-REPEATING ETF ALLOCATION PICKS — {latest_date}{C_RESET}")
+    print(f"{C_BOLD}{'=' * 76}{C_RESET}")
+    print(f"{'#':>2} {'Symbol':<14} {'Asset/Underlying':<24} {'Price':>10} {'Volar':>8} {'1M Ret':>8} {'3M Ret':>8}")
+    print(f"{'─' * 76}")
+
+    for i, (_, r) in enumerate(top_picks_df.iterrows(), 1):
+        sym = r["symbol"]
+        und = str(r.get("underlying", r.get("asset_class", "N/A")))[:23]
+        px = float(r.get("price", 0.0))
+        volar = float(r.get("volar_score", 0.0))
+        r1m = float(r.get("return_1m", 0.0))
+        r3m = float(r.get("return_3m", 0.0))
+        print(f"{i:>2} {C_GREEN}{sym:<14}{C_RESET} {und:<24} ₹{px:>9.2f} {volar:>7.2f} {r1m:>+7.1f}% {r3m:>+7.1f}%")
+
+    print(f"{C_BOLD}{'=' * 76}{C_RESET}")
+
+    csv_path = BASE_DIR / "reports" / "etf_top_picks.csv"
+    top_picks_df.to_csv(csv_path, index=False)
+    print(f"\n{C_GREEN}✓ ETF picks exported to: {csv_path}{C_RESET}")
+
+    input(f"\n{C_GRAY}Press Enter to return to menu...{C_RESET}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Option [14]: High Delivery Volume Spikes & Accumulation Tracker
+# ═══════════════════════════════════════════════════════════════════════
+def run_delivery_analytics_flow():
+    clear_screen()
+    latest_date = get_latest_date()
+    print_banner(latest_date)
+    print(f"\n{C_BOLD}{C_GREEN}📦 HIGH DELIVERY VOLUME SPIKES & ACCUMULATION TRACKER{C_RESET}\n")
+
+    from pydroid_core.delivery import NSEDeliveryManager
+    import datetime
+
+    dt = datetime.datetime.strptime(latest_date, "%Y-%m-%d").date()
+    mgr = NSEDeliveryManager(BASE_DIR)
+
+    print(f"Fetching / calculating delivery metrics for {latest_date}...")
+    df = mgr.get_delivery_data(dt)
+
+    if df.empty:
+        print(f"{C_YELLOW}No delivery data available for {latest_date} (may be holiday/weekend or offline).{C_RESET}")
+    else:
+        print(f"\n{C_BOLD}{'=' * 76}{C_RESET}")
+        print(f"{C_BOLD} TOP DELIVERY SPIKES & INSTITUTIONAL ACCUMULATION — {latest_date}{C_RESET}")
+        print(f"{C_BOLD}{'=' * 76}{C_RESET}")
+        print(f"{'#':>2} {'Symbol':<14} {'Deliv %':>9} {'Multiplier':>12} {'Deliv Qty':>12} {'Pattern':>14} {'Signal':<12}")
+        print(f"{'─' * 76}")
+
+        sort_col = "deliv_times" if "deliv_times" in df.columns else "deliv_per"
+        top_deliv = df.sort_values(sort_col, ascending=False).head(20)
+
+        for i, (_, r) in enumerate(top_deliv.iterrows(), 1):
+            sym = str(r["symbol"])
+            d_per = float(r.get("deliv_per", 0.0))
+            d_times = float(r.get("deliv_times", 1.0))
+            d_qty = int(r.get("deliv_qty", 0))
+            pattern = str(r.get("pattern", "NORMAL"))
+            signal = str(r.get("signal", ""))
+
+            p_col = C_GREEN if "ACCUMULATION" in pattern else (C_RED if "DISTRIBUTION" in pattern else C_WHITE)
+            print(f"{i:>2} {sym:<14} {d_per:>8.1f}% {d_times:>11.2f}x {d_qty:>12,} {p_col}{pattern:<14}{C_RESET} {signal:<12}")
+
+        print(f"{C_BOLD}{'=' * 76}{C_RESET}")
+        csv_path = BASE_DIR / "reports" / "delivery_analytics.csv"
+        df.to_csv(csv_path, index=False)
+        print(f"\n{C_GREEN}✓ Delivery metrics exported to: {csv_path}{C_RESET}")
+
+    input(f"\n{C_GRAY}Press Enter to return to menu...{C_RESET}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Option [15]: Regenerate Institutional 12-Sheet Excel Workbook
+# ═══════════════════════════════════════════════════════════════════════
+def run_excel_regenerator_flow():
+    clear_screen()
+    latest_date = get_latest_date()
+    print_banner(latest_date)
+    print(f"\n{C_BOLD}{C_BLUE}📑 REGENERATING INSTITUTIONAL 12-SHEET EXCEL WORKBOOK...{C_RESET}\n")
+
+    scanner = PydroidScanner(BASE_DIR)
+    print("Running full screener pipeline with Excel compilation enabled...")
+    top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(
+        as_of_date=latest_date,
+        top_n=20,
+        export_csv=True,
+        export_excel=True
+    )
+
+    excel_file = BASE_DIR / "reports" / f"MIP1_Momentum_Scanner_{latest_date}.xlsx"
+    if excel_file.exists():
+        print(f"\n{C_GREEN}✓ Institutional Excel workbook generated!{C_RESET}")
+        print(f"  • File: {excel_file} ({excel_file.stat().st_size:,} bytes)")
+        print(f"  • 12 Sheets:")
+        print(f"     1. Dashboard")
+        print(f"     2. Strategy Rationale (Dark Navy #0D47A1 tab, ELI5 quant rationale, 5-yr proofs)")
+        print(f"     3. Sector Rotation (12 sectors, relative alpha, RRG quadrants)")
+        print(f"     4. Industry Ranking")
+        print(f"     5. Industry History 30d")
+        print(f"     6. Stock Ranking (Volar, Delivery %, ATR, TradingView links)")
+        print(f"     7. Top Candidates (ATR Risk Parity, Stop Loss, 2-per-sector cap)")
+        print(f"     8. Highest Delivery (Institutional accumulation spikes >= 5Cr)")
+        print(f"     9. ETF Momentum Ranking (Definedge Momentify ALL-ONE Top 7)")
+        print(f"    10. Pick Performance (Vintage performance tracker)")
+        print(f"    11. Breadth History")
+        print(f"    12. Configuration")
+    else:
+        print(f"\n{C_RED}✗ Failed to compile Excel workbook.{C_RESET}")
+
+    input(f"\n{C_GRAY}Press Enter to return to menu...{C_RESET}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN MENU (15 Options)
 # ═══════════════════════════════════════════════════════════════════════
 def main_menu():
     while True:
@@ -645,13 +816,16 @@ def main_menu():
         print_banner(latest_date)
 
         print(f"\n{C_BOLD} ── SCANNER & ANALYSIS ──{C_RESET}")
-        print(f"  {C_GREEN}[ 1]{C_RESET} 🚀  Run Weekly Momentum Scanner (Full Suite)")
+        print(f"  {C_GREEN}[ 1]{C_RESET} 🚀  Run Weekly Momentum Scanner (Full Suite & 12-Sheet Excel)")
         print(f"  {C_CYAN}[10]{C_RESET} 📈  Standalone Market Breadth Report")
         print(f"  {C_MAGENTA}[11]{C_RESET} 🔄  Standalone Sector Rotation & RRG Analysis")
+        print(f"  {C_CYAN}[13]{C_RESET} 🎯  Definedge ALL-ONE ETF Momentum Scanner (Top 7)")
+        print(f"  {C_GREEN}[14]{C_RESET} 📦  High Delivery Volume Spikes & Accumulation Tracker")
+        print(f"  {C_BLUE}[15]{C_RESET} 📑  Regenerate Institutional 12-Sheet Excel Workbook")
 
         print(f"\n{C_BOLD} ── TELEGRAM ──{C_RESET}")
         print(f"  {C_BLUE}[ 2]{C_RESET} 📱  Preview Telegram Alert (Terminal Preview)")
-        print(f"  {C_MAGENTA}[ 3]{C_RESET} ⚡  Dispatch Live Telegram Alert (Text + Charts)")
+        print(f"  {C_MAGENTA}[ 3]{C_RESET} ⚡  Dispatch Live Telegram Alert (Text + Charts + 12-Sheet Excel)")
 
         print(f"\n{C_BOLD} ── PORTFOLIO & BACKTEST ──{C_RESET}")
         print(f"  {C_GREEN}[ 4]{C_RESET} 📊  Generate Visual Charts & Tearsheets")
@@ -667,7 +841,7 @@ def main_menu():
         print(f"\n  {C_RED}[ 0]{C_RESET} 🚪  Exit Workstation\n")
 
         try:
-            choice = input(f"{C_BOLD}Select Option [0-12]: {C_RESET}").strip()
+            choice = input(f"{C_BOLD}Select Option [0-15]: {C_RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting.")
             break
@@ -685,6 +859,9 @@ def main_menu():
             "10": run_standalone_breadth,
             "11": run_standalone_sector_rrg,
             "12": run_database_audit,
+            "13": run_etf_scanner_flow,
+            "14": run_delivery_analytics_flow,
+            "15": run_excel_regenerator_flow,
         }
 
         if choice == "0":
@@ -699,8 +876,8 @@ def main_menu():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Project MIP Pydroid 3 Mobile Trading Desk")
-    parser.add_argument("--option", type=int, choices=range(1, 13),
-                        help="Run option directly without menu (1-12)")
+    parser.add_argument("--option", type=int, choices=range(1, 16),
+                        help="Run option directly without menu (1-15)")
     args = parser.parse_args()
 
     option_map = {
@@ -716,6 +893,9 @@ if __name__ == "__main__":
         10: run_standalone_breadth,
         11: run_standalone_sector_rrg,
         12: run_database_audit,
+        13: run_etf_scanner_flow,
+        14: run_delivery_analytics_flow,
+        15: run_excel_regenerator_flow,
     }
 
     if args.option and args.option in option_map:

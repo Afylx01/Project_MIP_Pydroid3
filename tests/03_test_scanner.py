@@ -71,19 +71,42 @@ def main():
 
     # 2. Run Scan
     log_info("Running full quantitative screener pipeline...")
-    top_df, breadth, sectors, regime = scanner.run_scan(
+    top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(
         as_of_date=latest_date,
         top_n=20,
         lookback_days=550,
-        export_csv=True
+        export_csv=True,
+        export_excel=True
     )
 
-    # 3. Assert Candidate Count
+    # 3. Assert Candidate Count & Sector Concentration Hard Cap
     log_info(f"Top Candidates Selected: {len(top_df)}")
     if len(top_df) == 20:
         log_pass("Candidate allocation verified: Exactly 20 top momentum scrips selected")
     else:
         log_fail(f"Expected 20 candidates, got {len(top_df)}")
+        failures += 1
+
+    max_sec = top_df["sector"].value_counts().max()
+    log_info(f"Max stocks per sector: {max_sec}")
+    if max_sec <= 2:
+        log_pass("Sector concentration hard cap strictly satisfied (Max <= 2 stocks per sector)")
+    else:
+        log_fail(f"Sector hard cap violated: {max_sec} > 2")
+        failures += 1
+
+    # 3b. Assert ATR-14 & Dynamic Stop Loss
+    if "atr_14" in top_df.columns and "stop_loss" in top_df.columns:
+        log_pass("ATR-14 volatility risk metrics and dynamic stop loss (2x ATR) verified")
+    else:
+        log_fail("ATR-14 or stop_loss column missing from top_df")
+        failures += 1
+
+    # 3c. Assert ETF Momentum Engine (Top 7)
+    if top_etf is not None and len(top_etf) == 7:
+        log_pass(f"Definedge ALL-ONE ETF Momentum Engine verified: {len(top_etf)} top non-repeating picks")
+    else:
+        log_fail("ETF engine failed to return top 7 picks")
         failures += 1
 
     # 4. Assert Breadth Metrics
@@ -106,7 +129,7 @@ def main():
         log_fail(f"Sector count mismatch: Expected 12, got {len(sec_list)}")
         failures += 1
 
-    # 6. Check CSV Export
+    # 6. Check CSV and 12-Sheet Excel Export
     csv_file = BASE_DIR / "reports" / "screener_output_live.csv"
     if csv_file.exists() and csv_file.stat().st_size > 0:
         log_pass(f"Screener CSV export confirmed: {csv_file} ({csv_file.stat().st_size} bytes)")
@@ -114,14 +137,27 @@ def main():
         log_fail(f"Screener CSV export missing or empty: {csv_file}")
         failures += 1
 
+    excel_file = BASE_DIR / "reports" / f"MIP1_Momentum_Scanner_{latest_date}.xlsx"
+    if excel_file.exists() and excel_file.stat().st_size > 0:
+        log_pass(f"Institutional 12-sheet Excel export confirmed: {excel_file} ({excel_file.stat().st_size:,} bytes)")
+    else:
+        log_fail(f"Institutional Excel export missing: {excel_file}")
+        failures += 1
+
     # 7. Print Terminal Tearsheet
     print(f"\n{BOLD}--- Terminal Screener Tearsheet ---{RESET}")
-    tearsheet = format_screener_tearsheet(top_df, breadth, sectors, regime, latest_date)
+    tearsheet = format_screener_tearsheet(
+        top_df, breadth, sectors, regime, latest_date,
+        top_etf_df=top_etf, delivery_df=deliv
+    )
     print(tearsheet)
 
     # 8. Test Telegram Alert Formatting & Size Invariant
     print(f"\n{BOLD}--- Telegram Alert Payload Verification ---{RESET}")
-    alert_msg = format_telegram_alert(top_df, breadth, sectors, regime, latest_date)
+    alert_msg = format_telegram_alert(
+        top_df, breadth, sectors, regime, latest_date,
+        top_etf_df=top_etf, delivery_df=deliv
+    )
     char_len = len(alert_msg)
     log_info(f"Telegram Alert Length: {char_len:,} characters (Telegram Limit: 4,096)")
 

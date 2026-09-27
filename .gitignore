@@ -18,9 +18,11 @@ reports/*.json
 reports/*.png
 reports/*.html
 reports/*.txt
+reports/*.xlsx
 
 # Raw data cache
 data/raw_reference/
+data/bhavcopy_delivery/
 
 # OS artifacts
 .DS_Store
