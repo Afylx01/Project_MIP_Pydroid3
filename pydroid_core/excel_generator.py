@@ -63,13 +63,14 @@ class InstitutionalExcelGenerator:
         etf_ranking_df: Optional[pd.DataFrame] = None,
         top_etf_df: Optional[pd.DataFrame] = None,
         market_bullish: bool = True,
+        universe_label: str = "NIFTY 500",
     ) -> Path:
         """Assembles and formats all 12 sheets into the destination Excel file."""
         excel_path = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}.xlsx"
 
         # 1. Build DataFrame tabs
         dash_meta, dash_rot, dash_rrg, dash_stk, dash_etf, layout = self._build_dashboard_frames(
-            as_of_date, screener_df, top_candidates_df, breadth_data, sector_data, top_etf_df, market_bullish
+            as_of_date, screener_df, top_candidates_df, breadth_data, sector_data, top_etf_df, market_bullish, universe_label
         )
         rat_df = self._build_strategy_rationale_df(screener_df)
         sec_df = self._build_sector_rotation_df(sector_data)
@@ -81,7 +82,7 @@ class InstitutionalExcelGenerator:
         etf_sheet_df = self._build_etf_ranking_df(etf_ranking_df)
         perf_sum, perf_det = self._build_picks_performance_df()
         breadth_hist_df = self._build_breadth_history_df()
-        config_df = self._build_config_df(as_of_date, excel_path)
+        config_df = self._build_config_df(as_of_date, excel_path, universe_label)
 
         # 2. Write raw sheets using pd.ExcelWriter
         with pd.ExcelWriter(str(excel_path), engine="openpyxl") as writer:
@@ -116,7 +117,7 @@ class InstitutionalExcelGenerator:
 
         return excel_path
 
-    def _build_dashboard_frames(self, as_of_date, screener_df, top_candidates_df, breadth_data, sector_data, top_etf_df, market_bullish):
+    def _build_dashboard_frames(self, as_of_date, screener_df, top_candidates_df, breadth_data, sector_data, top_etf_df, market_bullish, universe_label="NIFTY 500"):
         tp = breadth_data.get("trend_participation", {})
         hp = breadth_data.get("high_proximity", {})
         nhl = breadth_data.get("net_highs_lows", {})
@@ -125,7 +126,7 @@ class InstitutionalExcelGenerator:
         meta_items = [
             ("Scan Date", as_of_date),
             ("Market Regime", regime_label),
-            ("Target Universe", "Nifty 500 Survivorship-Free PIT Universe (2.14M Bars)"),
+            ("Target Universe", f"{universe_label} Survivorship-Free PIT Universe"),
             ("Ranking Metric", "Volar Score (Smooth Return / Realized Annualized Volatility)"),
             ("Target Holdings", "Top 20 Scrips (Empirical Institutional Sweet Spot)"),
             ("Sector Hard Cap", "Max 2 Stocks per Sector (Strict Anti-Clustering Rule)"),
@@ -408,10 +409,11 @@ class InstitutionalExcelGenerator:
         rows = [{"Note": "Historical breadth logs stored in reports/market_breadth_live.json."}]
         return pd.DataFrame(rows)
 
-    def _build_config_df(self, as_of_date, excel_path):
+    def _build_config_df(self, as_of_date, excel_path, universe_label="NIFTY 500"):
         rows = [
             ("MIP Version", "v5.5.1 (Standalone Pydroid 3 Edition — Empirical Optimal Settings)"),
             ("Scan Date", as_of_date),
+            ("Target Universe", universe_label),
             ("Output File", str(excel_path.name)),
             ("Database Engine", "Zero-Compiler SQLite3 (universe.db)"),
             ("Ranking Metric", "Volar Score (Slope * 252 * R²)"),

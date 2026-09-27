@@ -66,15 +66,40 @@ def print_banner(latest_date: str):
 # ═══════════════════════════════════════════════════════════════════════
 # Option [1]: Weekly Momentum Scanner (Full Suite)
 # ═══════════════════════════════════════════════════════════════════════
-def run_scanner_flow(interactive: bool = True):
+def run_scanner_flow(interactive: bool = True, universe_mode: Optional[str] = None):
     clear_screen()
     initial_date = get_latest_date()
     print_banner(initial_date)
-    print(f"\n{C_BOLD}{C_YELLOW}⚡ RUNNING WEEKLY MOMENTUM SCANNER (AUTO-UPDATING UNIVERSE)...{C_RESET}\n")
+
+    selected_mode = universe_mode
+    if interactive and not selected_mode:
+        print(f"\n{C_BOLD}── SELECT TARGET UNIVERSE ──{C_RESET}")
+        print(f"  {C_GREEN}[1]{C_RESET} 🇮🇳  NIFTY 500 (Large, Mid & Smallcap — ~500 Stocks) [Default]")
+        print(f"  {C_CYAN}[2]{C_RESET} 🌐  NIFTY 750 (Total Market: 500 + Microcap 250 — ~750 Stocks)")
+        print(f"  {C_YELLOW}[3]{C_RESET} ⚡  ALL ACTIVE SCRIPS (Full Point-In-Time Database — ~988 Stocks)")
+        try:
+            u_input = input(f"\n{C_BOLD}Select Universe [1-3, Default=1]: {C_RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        if u_input == "2":
+            selected_mode = "NIFTY750"
+        elif u_input == "3":
+            selected_mode = "ALL"
+        else:
+            selected_mode = "NIFTY500"
+    elif not selected_mode:
+        selected_mode = "NIFTY500"
+
+    from pydroid_core.data_engine import get_universe_label
+    u_label = get_universe_label(selected_mode)
+
+    print(f"\n{C_BOLD}{C_YELLOW}⚡ RUNNING WEEKLY MOMENTUM SCANNER [{u_label}]...{C_RESET}\n")
 
     scanner = PydroidScanner(BASE_DIR)
     top_df, breadth, sectors, regime, top_etf, deliv = scanner.run_scan(
         as_of_date=None,
+        universe_mode=selected_mode,
         auto_update_universe=True,
         top_n=20,
         export_csv=True,
@@ -84,12 +109,13 @@ def run_scanner_flow(interactive: bool = True):
     scanned_date = get_latest_date()
     tearsheet = format_screener_tearsheet(
         top_df, breadth, sectors, regime, scanned_date,
-        top_etf_df=top_etf, delivery_df=deliv
+        top_etf_df=top_etf, delivery_df=deliv, universe_label=u_label
     )
     print(tearsheet)
 
     print(f"\n{C_GREEN}✓ Scan completed successfully!{C_RESET}")
     print(f"  • Scanned Market Date: {C_BOLD}{C_GREEN}{scanned_date}{C_RESET}")
+    print(f"  • Target Universe:     {C_BOLD}{C_CYAN}{u_label}{C_RESET}")
     print(f"  • Screener CSV: {BASE_DIR / 'reports' / 'screener_output_live.csv'}")
     print(f"  • Institutional 12-Sheet Excel: {BASE_DIR / 'reports' / f'MIP1_Momentum_Scanner_{scanned_date}.xlsx'}")
     print(f"  • Market Breadth: {BASE_DIR / 'reports' / 'market_breadth_live.json'}")
@@ -135,9 +161,10 @@ def run_telegram_preview():
         if deliv_file.exists():
             deliv = pd.read_csv(deliv_file)
 
+    u_label = top_df.attrs.get("universe_label", "NIFTY 500")
     msg = format_telegram_alert(
         top_df, breadth, sectors, regime, latest_date,
-        top_etf_df=top_etf, delivery_df=deliv
+        top_etf_df=top_etf, delivery_df=deliv, universe_label=u_label
     )
     sender = PydroidTelegramSender()
     sender.send_message(msg, dry_run=True)
@@ -190,9 +217,10 @@ def run_telegram_dispatch():
         if deliv_file.exists():
             deliv = pd.read_csv(deliv_file)
 
+    u_label = top_df.attrs.get("universe_label", "NIFTY 500")
     msg = format_telegram_alert(
         top_df, breadth, sectors, regime, latest_date,
-        top_etf_df=top_etf, delivery_df=deliv
+        top_etf_df=top_etf, delivery_df=deliv, universe_label=u_label
     )
     print("Dispatching executive alert message...")
     ok_msg = sender.send_message(msg)
@@ -819,7 +847,7 @@ def main_menu():
         print_banner(latest_date)
 
         print(f"\n{C_BOLD} ── SCANNER & ANALYSIS ──{C_RESET}")
-        print(f"  {C_GREEN}[ 1]{C_RESET} 🚀  Run Weekly Momentum Scanner (Full Suite & 12-Sheet Excel)")
+        print(f"  {C_GREEN}[ 1]{C_RESET} 🚀  Run Weekly Momentum Scanner (Select Nifty 500 / 750 / All)")
         print(f"  {C_CYAN}[10]{C_RESET} 📈  Standalone Market Breadth Report")
         print(f"  {C_MAGENTA}[11]{C_RESET} 🔄  Standalone Sector Rotation & RRG Analysis")
         print(f"  {C_CYAN}[13]{C_RESET} 🎯  Definedge ALL-ONE ETF Momentum Scanner (Top 7)")
@@ -881,10 +909,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Project MIP Pydroid 3 Mobile Trading Desk")
     parser.add_argument("--option", type=int, choices=range(1, 16),
                         help="Run option directly without menu (1-15)")
+    parser.add_argument("--universe", choices=["500", "750", "all", "NIFTY500", "NIFTY750", "ALL"],
+                        default="NIFTY500", help="Target universe selection (500, 750, all)")
     args = parser.parse_args()
 
     option_map = {
-        1: lambda: run_scanner_flow(interactive=False),
+        1: lambda: run_scanner_flow(interactive=False, universe_mode=args.universe),
         2: run_telegram_preview,
         3: run_telegram_dispatch,
         4: run_visuals_generator,

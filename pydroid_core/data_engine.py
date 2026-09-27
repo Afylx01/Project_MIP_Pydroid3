@@ -11,7 +11,7 @@ import json
 import sqlite3
 import pandas as pd
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Set
 
 _CACHED_CONN: Optional[sqlite3.Connection] = None
 
@@ -255,3 +255,91 @@ def get_universe_statistics() -> Dict[str, Any]:
         "max_date": max_date,
         "delisted_rows": delisted_count,
     }
+
+
+def load_universe_constituents(universe_name: str = "NIFTY500", force_refresh: bool = False) -> Set[str]:
+    """
+    Dynamically fetches and loads active symbols for the designated universe.
+    Primary Source: www.niftyindices.com (official index constituent portal)
+    Failover: nsearchives.nseindia.com / archives.nseindia.com
+    Supported modes:
+      - 'NIFTY500' / '500': Nifty 500 (~500 scrips)
+      - 'NIFTY750' / '750': Nifty 750 Total Market (~750 scrips)
+      - 'ALL' / 'MASTER': All active scrips in universe.db (~988 scrips)
+    """
+    import time
+    u_clean = str(universe_name).strip().upper().replace(" ", "").replace("_", "")
+    base_dir = get_base_dir()
+    raw_dir = base_dir / "data" / "raw_reference"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    if u_clean in ["500", "NIFTY500"]:
+        fpath = raw_dir / "ind_nifty500list.csv"
+        urls = [
+            "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+            "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+            "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+        ]
+    elif u_clean in ["750", "NIFTY750", "TOTALMARKET"]:
+        fpath = raw_dir / "ind_niftytotalmarket_list.csv"
+        urls = [
+            "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv",
+            "https://nsearchives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv",
+            "https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv",
+        ]
+    elif u_clean in ["ALL", "MASTER", "PIT"]:
+        return set()  # Empty set signifies no filtering (all active scrips)
+    else:
+        fpath = raw_dir / "ind_nifty500list.csv"
+        urls = [
+            "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+            "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        ]
+
+    # Check if needs download (missing, <1KB, or older than 7 days if force_refresh)
+    needs_download = force_refresh or not fpath.exists() or fpath.stat().st_size < 1000
+    if not needs_download and fpath.exists():
+        # Check file age: if older than 7 days, refresh in background
+        file_age_days = (time.time() - fpath.stat().st_mtime) / 86400
+        if file_age_days > 7:
+            needs_download = True
+
+    if needs_download:
+        for url in urls:
+            try:
+                try:
+                    from curl_cffi import requests as _req
+                    s = _req.Session(impersonate="chrome")
+                except ImportError:
+                    import requests as _req
+                    s = _req.Session()
+                r = s.get(url, timeout=12)
+                if r.status_code == 200 and len(r.content) > 1000:
+                    with open(fpath, "wb") as f:
+                        f.write(r.content)
+                    break
+            except Exception:
+                continue
+
+    if fpath.exists():
+        try:
+            df = pd.read_csv(fpath)
+            sym_col = [c for c in df.columns if c.strip().upper() == "SYMBOL"]
+            if sym_col:
+                return set(df[sym_col[0]].astype(str).str.strip().str.upper())
+        except Exception:
+            pass
+
+    return set()
+
+
+def get_universe_label(universe_mode: str) -> str:
+    """Returns human-readable institutional label for the selected universe."""
+    u_clean = str(universe_mode).strip().upper().replace(" ", "").replace("_", "")
+    if u_clean in ["500", "NIFTY500"]:
+        return "NIFTY 500"
+    elif u_clean in ["750", "NIFTY750", "TOTALMARKET"]:
+        return "NIFTY 750 (TOTAL MARKET)"
+    elif u_clean in ["ALL", "MASTER", "PIT"]:
+        return "ALL ACTIVE SCRIPS"
+    return "NIFTY 500"

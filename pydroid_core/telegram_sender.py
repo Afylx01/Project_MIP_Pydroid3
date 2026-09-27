@@ -188,6 +188,7 @@ def format_telegram_alert(
     as_of_date: str,
     top_etf_df: Optional[pd.DataFrame] = None,
     delivery_df: Optional[pd.DataFrame] = None,
+    universe_label: str = "NIFTY 500",
 ) -> str:
     """Formats institutional Telegram HTML message with v5.5.1 rich sections."""
     tp = breadth.get("trend_participation", {})
@@ -200,7 +201,7 @@ def format_telegram_alert(
         dmap = delivery_df.set_index("symbol").to_dict(orient="index")
 
     msg = f"🚀 <b>MIP-1 MOMENTUM SCANNER v5.5.1</b>\n"
-    msg += f"📅 <b>Date:</b> <code>{as_of_date}</code> | <b>Universe:</b> <code>NIFTY 500 PIT</code>\n"
+    msg += f"📅 <b>Date:</b> <code>{as_of_date}</code> | <b>Universe:</b> <code>{universe_label}</code>\n"
     msg += f"🛡️ <b>Benchmark Regime:</b> {regime.get('label', 'N/A')}\n"
     msg += f"📊 <b>Market Breadth:</b> {b_reg.get('label', 'N/A')}\n\n"
 

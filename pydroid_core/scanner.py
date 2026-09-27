@@ -27,6 +27,8 @@ from .data_engine import (
     get_latest_date,
     load_bars,
     load_symbol_sector_map,
+    load_universe_constituents,
+    get_universe_label,
 )
 from .rrg import compute_rrg_metrics
 from .breadth import MarketBreadthEngine
@@ -88,6 +90,7 @@ class PydroidScanner:
     def run_scan(
         self,
         as_of_date: Optional[str] = None,
+        universe_mode: str = "NIFTY500",
         top_n: int = 20,
         lookback_days: int = 550,
         max_per_sector: int = 2,
@@ -99,6 +102,7 @@ class PydroidScanner:
         Executes end-to-end screener pipeline on SQLite universe.
         If auto_update_universe=True and as_of_date is None, automatically syncs universe
         with the latest market date before running the scan.
+        Filters universe by universe_mode ('NIFTY500', 'NIFTY750', 'ALL').
         Returns: (top_df, breadth_results, sector_results, regime_info, top_etf_df, delivery_df)
         """
         # 0. Dynamic Market Data Auto-Sync
@@ -117,7 +121,8 @@ class PydroidScanner:
                 self.log(f"Warning: Auto-update universe check skipped ({e}). Proceeding with current data.")
 
         target_date = as_of_date or get_latest_date()
-        self.log(f"Starting Production Momentum Scan as of {target_date}...")
+        u_label = get_universe_label(universe_mode)
+        self.log(f"Starting Production Momentum Scan as of {target_date} [{u_label}]...")
 
         target_dt = datetime.datetime.strptime(target_date, "%Y-%m-%d")
         start_str = (target_dt - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -126,7 +131,16 @@ class PydroidScanner:
         bars = load_bars(start_date=start_str, end_date=target_date, include_delisted=False)
 
         active_today = set(bars[bars["date"] == target_date]["symbol"].unique())
-        self.log(f"Active symbols on {target_date}: {len(active_today):,}")
+        
+        # Universe constituent filtering (Nifty 500 / Nifty 750 / All Active)
+        u_constituents = load_universe_constituents(universe_mode)
+        if u_constituents:
+            initial_count = len(active_today)
+            active_today = active_today.intersection(u_constituents)
+            self.log(f"Universe Filter [{u_label}]: {len(active_today):,} / {initial_count:,} active symbols matched.")
+        else:
+            self.log(f"Universe Filter [{u_label}]: Evaluating all {len(active_today):,} active symbols.")
+
         bars = bars[bars["symbol"].isin(active_today)].copy()
         bars = bars.sort_values(by=["symbol", "date"]).reset_index(drop=True)
 
@@ -287,11 +301,14 @@ class PydroidScanner:
                     etf_ranking_df=etf_ranking_df,
                     top_etf_df=top_etf_df,
                     market_bullish=market_bullish,
+                    universe_label=u_label,
                 )
                 self.log(f"Generated 12-sheet Excel workbook: {excel_file}")
             except Exception as e:
                 self.log(f"Warning: Excel workbook compilation failed: {e}")
 
+        top_df.attrs["universe_label"] = u_label
+        top_df.attrs["universe_mode"] = universe_mode
         return top_df, breadth_results, sector_results, regime_info, top_etf_df, delivery_df
 
 
@@ -303,8 +320,10 @@ def format_screener_tearsheet(
     as_of_date: str,
     top_etf_df: Optional[pd.DataFrame] = None,
     delivery_df: Optional[pd.DataFrame] = None,
+    universe_label: Optional[str] = None,
 ) -> str:
     """Formats plain-text / ANSI terminal summary tearsheet with full v5.5.1 sections."""
+    u_str = universe_label or top_df.attrs.get("universe_label", "NIFTY 500")
     lines = []
     lines.append("=" * 76)
     lines.append(f" PROJECT MIP: WEEKLY MOMENTUM SCANNER TEARSHEET ({as_of_date})")
@@ -312,6 +331,7 @@ def format_screener_tearsheet(
 
     # 1. Market Regime & Breadth
     lines.append(f"\n[1] MARKET REGIME & BREADTH")
+    lines.append(f"  Target Universe:   {u_str}")
     lines.append(f"  Benchmark Regime:  {regime.get('label', 'N/A')}")
     b_tp = breadth.get("trend_participation", {})
     b_hp = breadth.get("high_proximity", {})
