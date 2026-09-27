@@ -12,7 +12,7 @@ This edition of Project MIP is engineered specifically for **native mobile execu
 ### Core Architectural Highlights:
 1. **Zero-Compiler Invariant**: 100% pure Python + standard library `sqlite3`. Strictly eliminates `pyarrow` and `fastparquet` dependencies.
 2. **Indexed SQLite Master Database (`universe.db`)**: 
-   - 2,155,428 historical equity bars across 1,039 NIFTY 500 symbols (2007–2026), Latest EOD: 2026-09-25.
+   - 2,155,428+ historical equity bars across 1,039 NIFTY 500 symbols (2007–2026), Latest EOD: 2026-09-25.
    - Compound indices (`idx_prices_sym_date`, `idx_prices_date`, `idx_prices_sym`).
    - Ultra-fast indexed queries (<15ms per 250-bar series).
 3. **Native Mobile Visualizations**:
@@ -85,7 +85,7 @@ Launch the **Pydroid 3** app from your Samsung Galaxy S23 app drawer.
 
 ### Step 3: Run Remaining TDD Integrity Tests
 Open and run each test file in order by tapping the yellow Play button:
-- `tests/02_test_data_engine.py`: Validates dynamic monotonic bounds (>= 2,146,531 rows, detected: 2,155,428), 0 nulls, sub-15ms lookups.
+- `tests/02_test_data_engine.py`: Validates dynamic monotonic bounds (>= 2,146,531 rows, detected: 2,155,428+), 0 nulls, sub-15ms lookups.
 - `tests/03_test_scanner.py`: Runs full momentum scan, outputs Top 20 table.
 - `tests/04_test_visuals.py`: Generates Matplotlib PNG, Plotly HTML, and runs backtest.
 
@@ -148,4 +148,4 @@ To test live Telegram alert dispatch:
 - **PRoot / Termux Dependency**: **0%** (Runs 100% inside standalone Pydroid 3 Android app).
 - **PyArrow / Fastparquet Dependency**: **0%** (All data queries run via standard library `sqlite3`).
 - **External Binaries**: **0%** (Replaced `/usr/local/bin/telegram-notify` with native HTTP REST calls).
-- **Data Parity**: **100%** (2,155,428 bars and 1,039 scrips verified with 0 nulls and 100% positive prices).
+- **Data Parity**: **100%** (2,155,428+ bars and 1,039 scrips verified with 0 nulls and 100% positive prices).
