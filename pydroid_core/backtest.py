@@ -105,12 +105,20 @@ class LightweightBacktester:
 
         current_holdings = {}  # {symbol: shares}
 
+        # Pre-index only needed rebalance dates for instant O(1) lookups
+        self.log(f"Pre-indexing {len(rebalance_dates)} rebalance snapshots...")
+        reb_date_set = set(rebalance_dates)
+        reb_bars = bars[bars["date"].isin(reb_date_set)]
+        bars_by_date = {d: g for d, g in reb_bars.groupby("date")}
+
         for i in range(len(rebalance_dates) - 1):
             reb_date = rebalance_dates[i]
             next_reb_date = rebalance_dates[i + 1]
 
-            # Price lookup for current date
-            reb_slice = bars[bars["date"] == reb_date]
+            # Price lookup for current date (O(1) instant hash lookup)
+            reb_slice = bars_by_date.get(reb_date, pd.DataFrame())
+            if reb_slice.empty:
+                continue
             close_map_reb = dict(zip(reb_slice["symbol"], reb_slice["close"]))
 
             # Evaluate strategy selection
@@ -136,9 +144,9 @@ class LightweightBacktester:
                         new_holdings[sym] = (shares, px)
                         trades_count += 1
                 
-                # Next period close lookup
-                next_slice = bars[bars["date"] == next_reb_date]
-                close_map_next = dict(zip(next_slice["symbol"], next_slice["close"]))
+                # Next period close lookup (O(1) hash lookup)
+                next_slice = bars_by_date.get(next_reb_date, pd.DataFrame())
+                close_map_next = dict(zip(next_slice["symbol"], next_slice["close"])) if not next_slice.empty else {}
 
                 next_val = 0.0
                 for sym, (shares, buy_px) in new_holdings.items():
@@ -180,10 +188,20 @@ class LightweightBacktester:
 
         win_rate = round((winning_trades / max(1, total_closed_trades)) * 100.0, 1)
 
-        # Benchmark comparison
-        bm_start = bm_map.get(rebalance_dates[0], 1.0)
-        bm_end = bm_map.get(rebalance_dates[-1], 1.0)
-        bm_cagr = ((bm_end / max(1.0, bm_start)) ** (1.0 / n_years) - 1.0) * 100.0 if bm_start > 0 else 0.0
+        # Benchmark comparison (Robust nearest-date interpolation & fallback)
+        if not b_df.empty:
+            b_start_rows = b_df[b_df["date"] >= start_date]
+            b_start_px = float(b_start_rows.iloc[0]["close"]) if not b_start_rows.empty else float(b_df.iloc[0]["close"])
+
+            b_end_rows = b_df[b_df["date"] <= end_date]
+            b_end_px = float(b_end_rows.iloc[-1]["close"]) if not b_end_rows.empty else float(b_df.iloc[-1]["close"])
+
+            if b_start_px > 0 and b_end_px > 0:
+                bm_cagr = ((b_end_px / b_start_px) ** (1.0 / n_years) - 1.0) * 100.0
+            else:
+                bm_cagr = 0.0
+        else:
+            bm_cagr = 0.0
 
         results = {
             "start_date": start_date,
