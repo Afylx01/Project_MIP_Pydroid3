@@ -272,10 +272,26 @@ class PydroidAutoFetch:
         if not dry_run and new_data_frames:
             write_conn = _de.get_connection(read_only=False, reuse=False)
             try:
+                upsert_query = """
+                    INSERT OR REPLACE INTO prices 
+                    (date, symbol, open, high, low, close, volume, is_delisted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """
                 for df in new_data_frames:
-                    df[['date', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'is_delisted']].to_sql(
-                        'prices', write_conn, if_exists='append', index=False
-                    )
+                    rows_to_insert = [
+                        (
+                            str(row['date']),
+                            str(row['symbol']),
+                            float(row['open']),
+                            float(row['high']),
+                            float(row['low']),
+                            float(row['close']),
+                            float(row['volume']),
+                            int(row.get('is_delisted', 0))
+                        )
+                        for _, row in df.iterrows()
+                    ]
+                    write_conn.executemany(upsert_query, rows_to_insert)
                 
                 start_ca, end_ca = missing_dates[0], missing_dates[-1]
                 raw_ca = self.fetch_corporate_actions(start_ca, end_ca)
@@ -283,13 +299,15 @@ class PydroidAutoFetch:
                 if parsed_ca:
                     self.apply_backward_adjustments(write_conn, parsed_ca)
                     actions_applied = len(parsed_ca)
-                    
-                write_conn.commit()
                 
                 is_valid, msg = self.validate_database(write_conn)
                 if not is_valid:
-                    self.log(f"Validation failed: {msg}")
-                    
+                    write_conn.rollback()
+                    self.log(f"Database validation failed: {msg}. Rolled back transaction.")
+                    return {"status": "error", "message": f"Validation failed: {msg}"}
+
+                write_conn.commit()
+                self.log(f"Successfully committed {sum(len(df) for df in new_data_frames):,} bars and {actions_applied} corporate actions.")
                 _de._CACHED_CONN = None
                 
             except Exception as e:

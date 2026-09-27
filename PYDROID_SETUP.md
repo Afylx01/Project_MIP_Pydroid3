@@ -12,7 +12,7 @@ This edition of Project MIP is engineered specifically for **native mobile execu
 ### Core Architectural Highlights:
 1. **Zero-Compiler Invariant**: 100% pure Python + standard library `sqlite3`. Strictly eliminates `pyarrow` and `fastparquet` dependencies.
 2. **Indexed SQLite Master Database (`universe.db`)**: 
-   - 2,146,531 historical equity bars across 1,039 NIFTY 500 symbols (2007–2026).
+   - 2,155,428 historical equity bars across 1,039 NIFTY 500 symbols (2007–2026), Latest EOD: 2026-09-25.
    - Compound indices (`idx_prices_sym_date`, `idx_prices_date`, `idx_prices_sym`).
    - Ultra-fast indexed queries (<15ms per 250-bar series).
 3. **Native Mobile Visualizations**:
@@ -40,7 +40,7 @@ The workstation runs natively on the following packages already installed in Pyd
 ```text
 Project_MIP_Pydroid3/
 ├── data/
-│   ├── universe.db                # 262.8 MB Indexed SQLite database (2.14M bars)
+│   ├── universe.db                # 270.8 MB Indexed SQLite database (2.15M bars)
 │   ├── benchmark_nifty500.csv     # Continuous NIFTY 500 benchmark proxy
 │   ├── symbol_sector_map.json     # Official 12-sector taxonomy (1,039 scrips)
 │   └── trading_calendar.txt       # Official NSE trading days calendar
@@ -85,7 +85,7 @@ Launch the **Pydroid 3** app from your Samsung Galaxy S23 app drawer.
 
 ### Step 3: Run Remaining TDD Integrity Tests
 Open and run each test file in order by tapping the yellow Play button:
-- `tests/02_test_data_engine.py`: Validates 2,146,531 rows, 0 nulls, sub-15ms lookups.
+- `tests/02_test_data_engine.py`: Validates dynamic monotonic bounds (>= 2,146,531 rows, detected: 2,155,428), 0 nulls, sub-15ms lookups.
 - `tests/03_test_scanner.py`: Runs full momentum scan, outputs Top 20 table.
 - `tests/04_test_visuals.py`: Generates Matplotlib PNG, Plotly HTML, and runs backtest.
 
@@ -94,22 +94,34 @@ Open and run each test file in order by tapping the yellow Play button:
 2. Tap the yellow **Play (▶)** button.
 3. The interactive mobile dashboard will display:
    ```text
-   ╔════════════════════════════════════════════════════════════════════╗
-   ║            PROJECT MIP — PYDROID 3 QUANTITATIVE DESK               ║
-   ║     Standalone Zero-Compiler Edition • Python 3.13 ARM64 Mobile    ║
-   ╚════════════════════════════════════════════════════════════════════╝
-    Database: universe.db (Indexed SQLite) | Latest EOD: 2026-09-11
-   ──────────────────────────────────────────────────────────────────────
+   ╔══════════════════════════════════════════════════════════════════════╗
+   ║           PROJECT MIP — PYDROID 3 MOBILE TRADING DESK                ║
+   ║    Standalone Zero-Compiler Edition • Python 3.13 ARM64 • v2.0.0     ║
+   ╚══════════════════════════════════════════════════════════════════════╝
+    Database: universe.db (Indexed SQLite) | Latest EOD: 2026-09-25
+   ────────────────────────────────────────────────────────────────────────
 
-    OPERATIONAL MENU:
+    ── SCANNER & ANALYSIS ──
+     [ 1] 🚀  Run Weekly Momentum Scanner (Full Suite)
+     [10] 📈  Standalone Market Breadth Report
+     [11] 🔄  Standalone Sector Rotation & RRG Analysis
 
-     [1] 🚀  Run Weekly Momentum Scanner (Full Suite)
-     [2] 📱  Preview Telegram Alert (Terminal Preview)
-     [3] ⚡  Dispatch Live Telegram Alert (Text + Charts)
-     [4] 📊  Generate Visual Charts & Tearsheets (Plotly/Matplotlib)
-     [5] 💼  Run Lightweight Custom Backtester
-     [6] 🛡️   Run TDD Diagnostics & Integrity Suite (01–04)
-     [0] 🚪  Exit Workstation
+    ── TELEGRAM ──
+     [ 2] 📱  Preview Telegram Alert (Terminal Preview)
+     [ 3] ⚡  Dispatch Live Telegram Alert (Text + Charts)
+
+    ── PORTFOLIO & BACKTEST ──
+     [ 4] 📊  Generate Visual Charts & Tearsheets
+     [ 5] 💼  Run Lightweight Custom Backtester
+     [ 7] 💰  Portfolio Rebalancing & Order Generation
+
+    ── DATA & MAINTENANCE ──
+     [ 8] 📡  Auto-Fetch Market Data (NSE Bhavcopy Sync)
+     [ 9] 🏭  Sync NSE Sector Taxonomy
+     [12] 🔍  Full Database Integrity Audit
+     [ 6] 🛡️   Run TDD Diagnostics & Integrity Suite
+
+     [ 0] 🚪  Exit Workstation
    ```
 
 ---
@@ -136,4 +148,4 @@ To test live Telegram alert dispatch:
 - **PRoot / Termux Dependency**: **0%** (Runs 100% inside standalone Pydroid 3 Android app).
 - **PyArrow / Fastparquet Dependency**: **0%** (All data queries run via standard library `sqlite3`).
 - **External Binaries**: **0%** (Replaced `/usr/local/bin/telegram-notify` with native HTTP REST calls).
-- **Data Parity**: **100%** (All 2,146,531 bars and 1,039 scrips identical to master Parquet database).
+- **Data Parity**: **100%** (2,155,428 bars and 1,039 scrips verified with 0 nulls and 100% positive prices).
