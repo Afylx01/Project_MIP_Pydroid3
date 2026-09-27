@@ -1,0 +1,30 @@
+# Project MIP Pydroid 3 — Git Ignore
+# universe.db exceeds GitHub 100 MB limit
+data/universe.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+.env.local
+
+# Reports (regenerated on demand)
+reports/*.csv
+reports/*.json
+reports/*.png
+reports/*.html
+reports/*.txt
+
+# Raw data cache
+data/raw_reference/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
