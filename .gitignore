@@ -1,6 +1,6 @@
 # Project MIP Pydroid 3 — Git Ignore
 # universe.db exceeds GitHub 100 MB limit
-data/universe.db
+data/universe.db*
 
 # Python
 __pycache__/

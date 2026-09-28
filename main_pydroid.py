@@ -379,37 +379,16 @@ def run_custom_backtest_flow():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Option [6]: TDD Diagnostics & Integrity Suite
+# Option [6]: Master Institutional TDD & Verification Suite (9 Tests)
 # ═══════════════════════════════════════════════════════════════════════
 def run_tdd_suite():
     clear_screen()
     latest_date = get_latest_date()
     print_banner(latest_date)
-    print(f"\n{C_BOLD}{C_YELLOW}🛡️ RUNNING TDD TEST & INTEGRITY SUITE (TESTS 01 - 04)...{C_RESET}\n")
+    print(f"\n{C_BOLD}{C_YELLOW}🛡️ RUNNING MASTER INSTITUTIONAL TEST SUITE (TESTS 01 - 09)...{C_RESET}\n")
 
-    test_scripts = [
-        "01_test_environment.py",
-        "02_test_data_engine.py",
-        "03_test_scanner.py",
-        "04_test_visuals.py",
-    ]
-
-    all_passed = True
-    for ts in test_scripts:
-        script_path = BASE_DIR / "tests" / ts
-        print(f"\n{C_BOLD}▶ Running {ts}...{C_RESET}")
-        ret = os.system(f'"{sys.executable}" "{script_path}"')
-        if ret != 0:
-            all_passed = False
-            print(f"{C_RED}✗ Test {ts} returned exit code {ret}{C_RESET}")
-            break
-
-    print(f"\n{C_BOLD}{'=' * 68}{C_RESET}")
-    if all_passed:
-        print(f"{C_BOLD}{C_GREEN} 🎉 ALL TDD INTEGRITY TESTS PASSED SUCCESSFULLY! (100% CERTIFIED){C_RESET}")
-    else:
-        print(f"{C_BOLD}{C_RED} ❌ TDD TEST SUITE ENCOUNTERED FAILURES.{C_RESET}")
-    print(f"{C_BOLD}{'=' * 68}{C_RESET}")
+    master_runner = BASE_DIR / "tests" / "run_all_tests.py"
+    ret = os.system(f'"{sys.executable}" "{master_runner}"')
 
     input(f"\n{C_GRAY}Press Enter to return to menu...{C_RESET}")
 
@@ -424,17 +403,24 @@ def run_portfolio_orders():
     print(f"\n{C_BOLD}{C_GREEN}💰 PORTFOLIO REBALANCING & ORDER GENERATION{C_RESET}\n")
 
     from pydroid_core.portfolio import PortfolioManager
+    from pydroid_core.settings import load_investing_settings
 
-    capital_in = input("  Initial Capital (₹) [Default: 1000000]: ").strip() or "1000000"
-    top_n_in = input("  Portfolio Size Top N [Default: 20]: ").strip() or "20"
+    st = load_investing_settings(BASE_DIR)
+    def_cap = float(st.get("capital", 1000000.0))
+    def_top = int(st.get("top_n", 20))
+    def_max_sec = int(st.get("max_per_sector", 2))
+    def_mode = str(st.get("sizing_mode", "atr_risk_parity"))
+
+    capital_in = input(f"  Target Capital (₹) [Default: {def_cap:,.0f}]: ").strip() or str(int(def_cap))
+    top_n_in = input(f"  Portfolio Size Top N [Default: {def_top}]: ").strip() or str(def_top)
 
     try:
         capital = float(capital_in)
         top_n = int(top_n_in)
     except ValueError:
         print(f"{C_RED}Invalid inputs! Using defaults.{C_RESET}")
-        capital = 1_000_000.0
-        top_n = 20
+        capital = def_cap
+        top_n = def_top
 
     # Check if screener output exists
     screener_file = BASE_DIR / "reports" / "screener_output_live.csv"
@@ -882,7 +868,15 @@ def run_excel_regenerator_flow():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# MAIN MENU (15 Options)
+# Option [16]: Interactive Investing Settings TUI
+# ═══════════════════════════════════════════════════════════════════════
+def run_investing_settings_flow():
+    from pydroid_core.settings import interactive_settings_menu
+    interactive_settings_menu(BASE_DIR)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN MENU (16 Options)
 # ═══════════════════════════════════════════════════════════════════════
 def main_menu():
     while True:
@@ -907,16 +901,19 @@ def main_menu():
         print(f"  {C_CYAN}[ 5]{C_RESET} 💼  Run Lightweight Custom Backtester")
         print(f"  {C_GREEN}[ 7]{C_RESET} 💰  Portfolio Rebalancing & Order Generation")
 
+        print(f"\n{C_BOLD} ── CONFIGURATION & MANDATE ──{C_RESET}")
+        print(f"  {C_WHITE}[16]{C_RESET} ⚙️   Configure Investing & Mandate Settings (TUI Console)")
+
         print(f"\n{C_BOLD} ── DATA & MAINTENANCE ──{C_RESET}")
         print(f"  {C_MAGENTA}[ 8]{C_RESET} 📡  Auto-Fetch Market Data (NSE Bhavcopy Sync)")
         print(f"  {C_BLUE}[ 9]{C_RESET} 🏭  Sync NSE Sector Taxonomy")
         print(f"  {C_YELLOW}[12]{C_RESET} 🔍  Full Database Integrity Audit")
-        print(f"  {C_YELLOW}[ 6]{C_RESET} 🛡️   Run TDD Diagnostics & Integrity Suite")
+        print(f"  {C_YELLOW}[ 6]{C_RESET} 🛡️   Run Master Institutional Test Suite (Tests 01-09)")
 
         print(f"\n  {C_RED}[ 0]{C_RESET} 🚪  Exit Workstation\n")
 
         try:
-            choice = input(f"{C_BOLD}Select Option [0-15]: {C_RESET}").strip()
+            choice = input(f"{C_BOLD}Select Option [0-16]: {C_RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting.")
             break
@@ -937,6 +934,7 @@ def main_menu():
             "13": run_etf_scanner_flow,
             "14": run_delivery_analytics_flow,
             "15": run_excel_regenerator_flow,
+            "16": run_investing_settings_flow,
         }
 
         if choice == "0":
@@ -951,8 +949,8 @@ def main_menu():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Project MIP Pydroid 3 Mobile Trading Desk")
-    parser.add_argument("--option", type=int, choices=range(1, 16),
-                        help="Run option directly without menu (1-15)")
+    parser.add_argument("--option", type=int, choices=range(1, 17),
+                        help="Run option directly without menu (1-16)")
     parser.add_argument("--universe", choices=["500", "750", "all", "NIFTY500", "NIFTY750", "ALL"],
                         default="NIFTY500", help="Target universe selection (500, 750, all)")
     args = parser.parse_args()
@@ -973,6 +971,7 @@ if __name__ == "__main__":
         13: run_etf_scanner_flow,
         14: run_delivery_analytics_flow,
         15: run_excel_regenerator_flow,
+        16: run_investing_settings_flow,
     }
 
     if args.option and args.option in option_map:

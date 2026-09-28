@@ -224,46 +224,54 @@ def sync_nse_sectors(base_dir: Optional[Path] = None) -> Dict[str, str]:
         
     raw_dir = base_dir / 'data' / 'raw_reference'
     raw_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = raw_dir / 'ind_niftytotalmarket_list.csv'
     
-    url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    files_to_sync = [
+        ("ind_niftytotalmarket_list.csv", "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"),
+        ("ind_nifty500list.csv", "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"),
+    ]
     
-    logger.info(f"Downloading NSE Sector mapping from {url}")
-    try:
-        session = get_session()
-        response = session.get(url, timeout=15)
-        response.raise_for_status()
-        csv_path.write_bytes(response.content)
-    except Exception as e:
-        logger.warning(f"Session download failed ({e}). Trying urllib fallback...")
-        req = urllib.request.Request(
-            url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        )
+    session = get_session()
+    for fname, url in files_to_sync:
+        csv_path = raw_dir / fname
+        logger.info(f"Downloading NSE Index list: {fname} from {url}")
         try:
-            with urllib.request.urlopen(req) as response:
-                csv_path.write_bytes(response.read())
-        except Exception as e_url:
-            logger.error(f"Fallback download failed: {e_url}")
-            if not csv_path.exists():
-                raise FileNotFoundError("Could not download NSE mapping and no cached version exists.") from e_url
-            logger.info("Using previously cached NSE mapping.")
-            
-    # Parse downloaded NSE mapping
+            response = session.get(url, timeout=15)
+            response.raise_for_status()
+            csv_path.write_bytes(response.content)
+            logger.info(f"Successfully downloaded {fname} ({len(response.content):,} bytes)")
+        except Exception as e:
+            logger.warning(f"Session download failed for {fname} ({e}). Trying urllib fallback...")
+            try:
+                req = urllib.request.Request(
+                    url, 
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                )
+                with urllib.request.urlopen(req) as response:
+                    csv_path.write_bytes(response.read())
+                logger.info(f"Fallback download succeeded for {fname}")
+            except Exception as e_url:
+                logger.error(f"Fallback download failed for {fname}: {e_url}")
+                if not csv_path.exists():
+                    logger.warning(f"No cached version of {fname} available.")
+
+    # Parse downloaded NSE mappings (Total Market + Nifty 500)
     nse_map = {}
-    with open(csv_path, 'r', encoding='utf-8', errors='ignore') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            symbol = row.get('Symbol', '').strip()
-            industry = row.get('Industry', '').strip()
-            company = row.get('Company Name', '').strip()
-            if not symbol:
-                continue
-                
-            if industry in INDUSTRY_TO_SECTOR:
-                nse_map[symbol] = INDUSTRY_TO_SECTOR[industry]
-            else:
-                nse_map[symbol] = classify_symbol(symbol, company)
+    for fname, _ in files_to_sync:
+        fpath = raw_dir / fname
+        if not fpath.exists():
+            continue
+        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = row.get('Symbol', '').strip()
+                industry = row.get('Industry', '').strip()
+                company = row.get('Company Name', '').strip()
+                if not symbol:
+                    continue
+                if industry in INDUSTRY_TO_SECTOR:
+                    nse_map[symbol] = INDUSTRY_TO_SECTOR[industry]
+                elif symbol not in nse_map:
+                    nse_map[symbol] = classify_symbol(symbol, company)
 
     # Get Universe symbols
     logger.info("Fetching universe symbols from database...")

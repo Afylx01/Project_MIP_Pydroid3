@@ -352,11 +352,12 @@ class ETFMomentumEngine:
                 return "🔥 TOP 7 PICK"
             return "QUALIFIED" if q else "BELOW EMA100"
 
-        res_df["status"] = [_get_status(s, u, q) for s, u, q in zip(res_df["symbol"], res_df["underlying"], res_df["qualified"])]
-        top_cand["status"] = [_get_status(s, u, q) for s, u, q in zip(top_cand["symbol"], top_cand["underlying"], top_cand["qualified"])]
-        res_df["tradingview"] = [f"https://in.tradingview.com/chart/?symbol=NSE:{s}" for s in res_df["symbol"]]
-        top_cand["tradingview"] = [f"https://in.tradingview.com/chart/?symbol=NSE:{s}" for s in top_cand["symbol"]]
-
+        res_df["underlying_asset"] = res_df["underlying"]
+        top_cand["underlying_asset"] = top_cand["underlying"]
         self.etf_ranking_df = res_df
         self.top_etf_candidates_df = top_cand
         return res_df, top_cand
+
+
+# Alias for institutional parity
+DefinedgeETFEngine = ETFMomentumEngine

@@ -112,19 +112,27 @@ class PortfolioManager:
 
     def generate_rebalance_orders(
         self,
-        capital: float = 1_000_000.0,
-        top_n: int = 20,
-        max_per_sector: int = 2,
-        sizing_mode: str = "atr_risk_parity",
-        risk_per_trade_pct: float = 1.0,
+        capital: Optional[float] = None,
+        top_n: Optional[int] = None,
+        max_per_sector: Optional[int] = None,
+        sizing_mode: Optional[str] = None,
+        risk_per_trade_pct: Optional[float] = None,
         current_holdings: Optional[dict] = None,
     ) -> pd.DataFrame:
         """
         Generates rebalance orders applying:
-          1. Sector Concentration Hard Cap (Max 2 per sector).
+          1. Sector Concentration Hard Cap (Max per sector).
           2. ATR-14 Volatility Risk Parity (or Equal Weight) Position Sizing.
           3. Statutory friction deductions.
         """
+        from .settings import load_investing_settings
+        st = load_investing_settings(self.base_dir)
+        capital = float(capital if capital is not None else st.get("capital", 1000000.0))
+        top_n = int(top_n if top_n is not None else st.get("top_n", 20))
+        max_per_sector = int(max_per_sector if max_per_sector is not None else st.get("max_per_sector", 2))
+        sizing_mode = str(sizing_mode if sizing_mode is not None else st.get("sizing_mode", "atr_risk_parity"))
+        risk_per_trade_pct = float(risk_per_trade_pct if risk_per_trade_pct is not None else st.get("risk_per_trade_pct", 1.0))
+
         self.log(f"Generating rebalance tickets: Capital=₹{capital:,.0f} | Top N={top_n} | Max/Sector={max_per_sector} | Sizing={sizing_mode}")
         screener_df = self.load_screener_output()
 

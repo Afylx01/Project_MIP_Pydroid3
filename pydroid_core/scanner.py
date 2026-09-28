@@ -90,10 +90,10 @@ class PydroidScanner:
     def run_scan(
         self,
         as_of_date: Optional[str] = None,
-        universe_mode: str = "NIFTY500",
-        top_n: int = 20,
+        universe_mode: Optional[str] = None,
+        top_n: Optional[int] = None,
         lookback_days: int = 550,
-        max_per_sector: int = 2,
+        max_per_sector: Optional[int] = None,
         export_csv: bool = True,
         export_excel: bool = True,
         auto_update_universe: bool = True,
@@ -103,8 +103,16 @@ class PydroidScanner:
         If auto_update_universe=True and as_of_date is None, automatically syncs universe
         with the latest market date before running the scan.
         Filters universe by universe_mode ('NIFTY500', 'NIFTY750', 'ALL').
+        Consumes active investing settings from data/investing_settings.json.
         Returns: (top_df, breadth_results, sector_results, regime_info, top_etf_df, delivery_df)
         """
+        from .settings import load_investing_settings
+        st = load_investing_settings(self.base_dir)
+        universe_mode = universe_mode or str(st.get("universe_mode", "NIFTY500"))
+        top_n = int(top_n if top_n is not None else st.get("top_n", 20))
+        max_per_sector = int(max_per_sector if max_per_sector is not None else st.get("max_per_sector", 2))
+        self.atr_stop_multiplier = float(st.get("atr_stop_multiplier", 2.0))
+
         # 0. Dynamic Market Data Auto-Sync
         if auto_update_universe and as_of_date is None:
             self.log("Auto-Sync Active: Checking NSE archives for latest market data...")
@@ -241,7 +249,8 @@ class PydroidScanner:
         top_df["rank"] = range(1, len(top_df) + 1)
 
         # Dynamic Stop Loss
-        top_df["stop_loss"] = (top_df["close"] - 2.0 * top_df["atr_14"]).clip(lower=0.01).round(2)
+        mult = getattr(self, "atr_stop_multiplier", 2.0)
+        top_df["stop_loss"] = (top_df["close"] - mult * top_df["atr_14"]).clip(lower=0.01).round(2)
 
         # 2. Sector Rotation Engine
         self.log("Evaluating Sector Rotation...")

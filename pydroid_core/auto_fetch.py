@@ -1,12 +1,15 @@
 import os
 import sys
 import io
+import csv
+import json
+import shutil
 import zipfile
 import sqlite3
 import datetime
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Set
 import pandas as pd
 import numpy as np
 
@@ -241,6 +244,91 @@ class PydroidAutoFetch:
             
         return True, "Database valid"
 
+    def get_expanded_universe_symbols(self) -> Set[str]:
+        """
+        Dynamically merges valid symbols across:
+          1. Existing symbols in SQLite prices table.
+          2. Active symbols in data/symbol_sector_map.json.
+          3. Official constituents from ind_nifty500list.csv.
+          4. Official constituents from ind_niftytotalmarket_list.csv.
+        Ensures newly listed or index-included stocks are never filtered out.
+        """
+        symbols = set()
+        try:
+            conn = _de.get_connection(read_only=True, reuse=True)
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT symbol FROM prices")
+            symbols.update(row[0] for row in cursor.fetchall())
+        except Exception as e:
+            self.log(f"Warning reading DB symbols: {e}")
+
+        # Add symbols from symbol_sector_map.json
+        sec_map_path = self.base_dir / "data" / "symbol_sector_map.json"
+        if sec_map_path.exists():
+            try:
+                with open(sec_map_path, "r", encoding="utf-8") as f:
+                    s_map = json.load(f)
+                    symbols.update(s_map.keys())
+            except Exception as e:
+                self.log(f"Warning reading sector map: {e}")
+
+        # Add symbols from raw_reference index lists
+        raw_dir = self.base_dir / "data" / "raw_reference"
+        for fname in ["ind_nifty500list.csv", "ind_niftytotalmarket_list.csv"]:
+            fpath = raw_dir / fname
+            if fpath.exists():
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        reader = csv.DictReader(f)
+                        for r in reader:
+                            s = r.get("Symbol", "").strip()
+                            if s:
+                                symbols.add(s)
+                except Exception as e:
+                    self.log(f"Warning reading {fname}: {e}")
+
+        self.log(f"Dynamic universe constituent registry: {len(symbols):,} allowed symbols")
+        return symbols
+
+    def _update_trading_calendar(self, new_dates: List[str]):
+        """Persists newly fetched trading sessions into data/trading_calendar.txt."""
+        cal_path = self.base_dir / "data" / "trading_calendar.txt"
+        if not cal_path.exists():
+            return
+        try:
+            with open(cal_path, "r", encoding="utf-8") as f:
+                existing_dates = set(line.strip() for line in f if line.strip())
+            
+            added = [d for d in new_dates if d not in existing_dates]
+            if added:
+                all_dates = sorted(existing_dates.union(added))
+                with open(cal_path, "w", encoding="utf-8") as f:
+                    for d in all_dates:
+                        f.write(f"{d}\n")
+                self.log(f"✓ Updated trading calendar with {len(added)} new sessions up to {all_dates[-1]}")
+        except Exception as e:
+            self.log(f"Warning updating trading calendar: {e}")
+
+    def _update_symbol_sector_map(self, symbols: Set[str]):
+        """Ensures newly added symbols are assigned sectors in symbol_sector_map.json."""
+        sec_map_path = self.base_dir / "data" / "symbol_sector_map.json"
+        if not sec_map_path.exists():
+            return
+        try:
+            with open(sec_map_path, "r", encoding="utf-8") as f:
+                s_map = json.load(f)
+            
+            missing = [s for s in symbols if s not in s_map]
+            if missing:
+                from .sync_sectors import classify_symbol, EXPLICIT_OVERRIDES
+                for s in missing:
+                    s_map[s] = EXPLICIT_OVERRIDES.get(s, classify_symbol(s))
+                with open(sec_map_path, "w", encoding="utf-8") as f:
+                    json.dump(s_map, f, indent=2, sort_keys=True)
+                self.log(f"✓ Classified and registered {len(missing)} newly discovered symbols into sector map.")
+        except Exception as e:
+            self.log(f"Warning updating sector map for new symbols: {e}")
+
     def sync_universe(self, target_date: str = None, dry_run: bool = False) -> Dict:
         self.log(f"Starting sync_universe, target_date={target_date}, dry_run={dry_run}")
         
@@ -249,12 +337,9 @@ class PydroidAutoFetch:
             self.log("No missing dates to fetch.")
             return {"status": "success", "dates_fetched": 0, "actions_applied": 0}
             
-        self.log(f"Missing dates: {missing_dates}")
+        self.log(f"Missing dates to fetch: {missing_dates}")
         
-        conn = _de.get_connection(read_only=True, reuse=True)
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM prices")
-        valid_symbols = set(row[0] for row in cursor.fetchall())
+        valid_symbols = self.get_expanded_universe_symbols()
         
         new_data_frames = []
         for d in missing_dates:
@@ -270,6 +355,15 @@ class PydroidAutoFetch:
                 
         actions_applied = 0
         if not dry_run and new_data_frames:
+            # Pre-update database backup
+            db_path = _de.get_db_path()
+            try:
+                bak_path = db_path.with_suffix(".db.bak")
+                shutil.copyfile(db_path, bak_path)
+                self.log(f"Created pre-update database backup: {bak_path.name}")
+            except Exception as e_bak:
+                self.log(f"Warning: Could not create pre-update backup: {e_bak}")
+
             write_conn = _de.get_connection(read_only=False, reuse=False)
             try:
                 upsert_query = """
@@ -310,7 +404,27 @@ class PydroidAutoFetch:
                 self.log(f"Successfully committed {sum(len(df) for df in new_data_frames):,} bars and {actions_applied} corporate actions.")
                 _de._CACHED_CONN = None
                 
-                # Sync benchmark series to match new universe dates
+                # 1. Update calendar
+                self._update_trading_calendar(missing_dates)
+
+                # 2. Update sector map for new symbols
+                all_new_symbols = set()
+                for df in new_data_frames:
+                    all_new_symbols.update(df['symbol'].tolist())
+                self._update_symbol_sector_map(all_new_symbols)
+
+                # 3. Pre-fetch delivery data
+                try:
+                    from .delivery import NSEDeliveryManager
+                    deliv_mgr = NSEDeliveryManager()
+                    for d in missing_dates:
+                        dt_obj = datetime.datetime.strptime(d, "%Y-%m-%d").date()
+                        deliv_mgr.get_delivery_data(dt_obj)
+                    self.log(f"✓ Proactively pre-cached delivery files for {len(missing_dates)} dates.")
+                except Exception as e_deliv:
+                    self.log(f"Delivery pre-cache notice: {e_deliv}")
+
+                # 4. Sync benchmark series to match new universe dates
                 self.sync_benchmark()
                 
             except Exception as e:
