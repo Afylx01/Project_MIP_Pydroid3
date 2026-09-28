@@ -1,15 +1,17 @@
 """
 Project MIP Pydroid 3: Mobile Visualization & Tearsheet Engine
-Directive: DIR-PROD-PYDROID3-PORT-01 (Institutional Wall Street Edition)
+Directive: DIR-PROD-PYDROID3-PORT-01 (Institutional Wall Street 5-Chart Suite)
 
-Leverages Pydroid 3 native visualization libraries:
-  - Matplotlib: Generates institutional, publication-quality PNG charts:
-      1. Market Overview 3-Panel Dashboard
-      2. Sector Rotation RRG & 30-Day Trajectory
-      3. Market Breadth Trends & 52-Week Net Highs
-  - Plotly: Generates standalone interactive HTML tearsheets
+Generates the complete 5 publication-grade institutional charts:
+  01. RRG Sector Rotation Dynamics (6-Session Drift)
+  02. Sector Rotation Trajectory Bump Chart (60 Sessions)
+  03. Market Regime & Breadth Multi-Panel
+  04. Industry Momentum Breadth Score Heatmap (40 Sessions)
+  05. Sector Excess Return vs Benchmark Across Multi-Horizon (1M, 3M, 6M)
+  Plus: Market Overview 3-Panel Dashboard & Interactive Plotly Tearsheet.
 """
 
+import os
 import sys
 import json
 import shutil
@@ -24,9 +26,9 @@ from .data_engine import get_base_dir
 # Institutional Theme Palette (Wall Street / Bloomberg Terminal Dark)
 THEME = {
     "bg_canvas": "#0B0F19",       # Deep Obsidian Navy
-    "bg_card": "#131C2E",         # Midnight Slate Panel
-    "border": "#24324D",          # Crisp subtle border
-    "text_primary": "#F8FAFC",    # Bright Crisp Off-White
+    "bg_card": "#131C2E",         # Midnight Slate
+    "border": "#24324D",          # Slate-700
+    "text_primary": "#F8FAFC",    # Slate-50
     "text_secondary": "#94A3B8",  # Slate-400
     "text_muted": "#64748B",      # Slate-500
     "green": "#10B981",           # Emerald Green (Bullish/Expansion)
@@ -39,27 +41,17 @@ THEME = {
     "blue_dark": "#0284C7",
     "amber": "#F59E0B",           # Warm Amber (Warning/Neutral)
     "purple": "#A855F7",          # Bright Violet
-    "cyan": "#06B6D4",            # Cyan / Flow
+    "cyan": "#06B6D4",            # Cyan
     "orange": "#F97316",          # Orange
     "grid": "#24324D",
     "grid_alpha": 0.45,
 }
 
-SECTOR_PALETTE = {
-    "PHARMA": "#10B981",       # Emerald
-    "METALS": "#06B6D4",       # Cyan
-    "AUTO": "#F59E0B",         # Amber
-    "CAPGOODS": "#A855F7",     # Violet
-    "CONSDUR": "#EC4899",      # Pink
-    "ENERGY": "#F97316",       # Orange
-    "IT": "#38BDF8",           # Sky Blue
-    "FINSERV": "#6366F1",      # Indigo
-    "FMCG": "#14B8A6",         # Teal
-    "REALTY": "#EAB308",       # Yellow
-    "CHEMICALS": "#84CC16",    # Lime
-    "INFRA_MEDIA": "#94A3B8",  # Slate
-    "OTHER": "#64748B",
-}
+BUMP_PALETTE = [
+    "#38BDF8", "#34D399", "#FBBF24", "#F43F5E", "#A78BFA",
+    "#FB923C", "#06B6D4", "#E879F9", "#4ADE80", "#94A3B8",
+    "#F472B6", "#60A5FA", "#2DD4BF", "#FACC15", "#C084FC"
+]
 
 
 def _clean_slug(universe_label: str) -> str:
@@ -75,13 +67,431 @@ def _apply_ax_styling(ax, title: str, subtitle: Optional[str] = None):
     ax.grid(True, linestyle="--", linewidth=0.6, color=THEME["grid"], alpha=THEME["grid_alpha"])
     ax.tick_params(colors=THEME["text_secondary"], labelsize=9)
     if title:
-        if subtitle:
-            ax.set_title(f"{title}\n", color=THEME["text_primary"], fontsize=11, fontweight="bold", pad=12, loc="left")
-            ax.text(0.0, 1.02, subtitle, transform=ax.transAxes, color=THEME["text_muted"], fontsize=8.5, va="bottom")
+        clean_title = str(title).replace("🟢", "").replace("🔴", "").replace("🟡", "").strip()
+        clean_sub = str(subtitle).replace("🟢", "").replace("🔴", "").replace("🟡", "").strip() if subtitle else None
+        if clean_sub:
+            ax.set_title(f"{clean_title}\n", color=THEME["text_primary"], fontsize=11, fontweight="bold", pad=12, loc="left")
+            ax.text(0.0, 1.02, clean_sub, transform=ax.transAxes, color=THEME["text_muted"], fontsize=8.5, va="bottom")
         else:
-            ax.set_title(title, color=THEME["text_primary"], fontsize=11, fontweight="bold", pad=10, loc="left")
+            ax.set_title(clean_title, color=THEME["text_primary"], fontsize=11, fontweight="bold", pad=10, loc="left")
 
 
+# ── 1. RRG SNAPSHOT ──
+def generate_rrg_snapshot_chart(
+    sector_data: Dict,
+    ind_hist_df: Optional[pd.DataFrame] = None,
+    output_png: Optional[Path] = None,
+    universe_label: str = "NIFTY 500",
+) -> Path:
+    """Generates 01. RRG Sector Rotation Dynamics (6-Session Drift & Quadrants)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    target_path = output_png or (get_base_dir() / "reports" / "charts" / "01_rrg_snapshot.png")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 9), dpi=150)
+    fig.patch.set_facecolor(THEME["bg_canvas"])
+    ax.set_facecolor(THEME["bg_card"])
+
+    sectors = sector_data.get("sectors", [])
+    if not sectors:
+        plt.close(fig)
+        return target_path
+
+    # Extract current coordinates
+    all_x = [float(s.get("rrg_rs_ratio", 100.0)) for s in sectors]
+    all_y = [float(s.get("rrg_rs_momentum", 100.0)) for s in sectors]
+
+    min_x, max_x = min(min(all_x), 97.0), max(max(all_x), 103.0)
+    min_y, max_y = min(min(all_y), 97.0), max(max(all_y), 103.0)
+    pad_x = max(1.5, (max_x - min_x) * 0.12)
+    pad_y = max(1.5, (max_y - min_y) * 0.12)
+    xlim = (min_x - pad_x, max_x + pad_x)
+    ylim = (min_y - pad_y, max_y + pad_y)
+
+    # Shaded Quadrants
+    ax.fill_between([100.0, xlim[1]], 100.0, ylim[1], color=THEME["green_tint"], alpha=0.35, zorder=0)
+    ax.fill_between([xlim[0], 100.0], 100.0, ylim[1], color=THEME["blue_dark"], alpha=0.25, zorder=0)
+    ax.fill_between([100.0, xlim[1]], ylim[0], 100.0, color=THEME["amber"], alpha=0.15, zorder=0)
+    ax.fill_between([xlim[0], 100.0], ylim[0], 100.0, color=THEME["red_tint"], alpha=0.30, zorder=0)
+
+    # Benchmark Crosshair at (100, 100)
+    ax.axvline(100.0, color=THEME["text_muted"], linestyle="--", linewidth=1.2, zorder=1)
+    ax.axhline(100.0, color=THEME["text_muted"], linestyle="--", linewidth=1.2, zorder=1)
+
+    # Quadrant Badges
+    q_badge_props = dict(boxstyle="round,pad=0.4", facecolor=THEME["bg_card"], edgecolor=THEME["border"], alpha=0.85)
+    ax.text(xlim[1] - pad_x * 0.2, ylim[1] - pad_y * 0.2, "LEADING (Bullish)", color=THEME["green"], fontsize=9.5, fontweight="bold", ha="right", va="top", bbox=q_badge_props)
+    ax.text(xlim[0] + pad_x * 0.2, ylim[1] - pad_y * 0.2, "IMPROVING (Recovery)", color=THEME["blue"], fontsize=9.5, fontweight="bold", ha="left", va="top", bbox=q_badge_props)
+    ax.text(xlim[1] - pad_x * 0.2, ylim[0] + pad_y * 0.2, "WEAKENING (Fading)", color=THEME["amber"], fontsize=9.5, fontweight="bold", ha="right", va="bottom", bbox=q_badge_props)
+    ax.text(xlim[0] + pad_x * 0.2, ylim[0] + pad_y * 0.2, "LAGGING (Bearish)", color=THEME["red"], fontsize=9.5, fontweight="bold", ha="left", va="bottom", bbox=q_badge_props)
+
+    # Plot sector points and drift trails
+    quad_vectors = {
+        "LEADING": (1.1, 0.9), "IMPROVING": (-1.1, 0.9),
+        "WEAKENING": (1.1, -0.9), "LAGGING": (-1.1, -0.9),
+    }
+
+    for idx, s in enumerate(sectors):
+        sec = s["sector"]
+        x, y = float(s.get("rrg_rs_ratio", 100.0)), float(s.get("rrg_rs_momentum", 100.0))
+        quad = str(s.get("rrg_quadrant", "UNKNOWN")).upper()
+        col = THEME["green"] if quad == "LEADING" else (THEME["blue"] if quad == "IMPROVING" else (THEME["amber"] if quad == "WEAKENING" else THEME["red"]))
+
+        # Check for history drift trail
+        if ind_hist_df is not None and not ind_hist_df.empty:
+            sec_col = "Sector" if "Sector" in ind_hist_df.columns else "industry"
+            sub_h = ind_hist_df[ind_hist_df[sec_col] == sec].tail(6)
+            if len(sub_h) >= 2 and "RS-Ratio" in sub_h.columns and "RS-Mom %" in sub_h.columns:
+                hx = sub_h["RS-Ratio"].tolist()
+                hy = (sub_h["RS-Mom %"] + 100.0).tolist()
+                ax.plot(hx, hy, color=col, alpha=0.6, linewidth=1.5, zorder=2)
+                for step, (px, py) in enumerate(zip(hx[:-1], hy[:-1])):
+                    ax.scatter([px], [py], s=15 + step * 8, color=col, alpha=0.5, zorder=2)
+
+        # Plot current bubble
+        ax.scatter([x], [y], s=260, color=col, alpha=0.9, edgecolors=THEME["text_primary"], linewidth=1.4, zorder=4)
+
+        # 2-letter acronym
+        words = sec.replace("&", " ").replace("-", " ").split()
+        acronym = "".join(w[0] for w in words[:2]).upper() if len(words) >= 2 else sec[:2].upper()
+        ax.text(x, y, acronym, color=THEME["text_primary"], fontsize=8, fontweight="bold", ha="center", va="center", zorder=5)
+
+        # Quadrant callout pill
+        vx, vy = quad_vectors.get(quad, (1.0, 1.0))
+        offset_x = vx * (0.8 + (idx % 3) * 0.4)
+        offset_y = vy * (0.6 + (idx % 4) * 0.35)
+
+        clean_name = sec.replace("_", " ").title()[:18]
+        pill_text = f"{clean_name}\n({x:.1f}, {y:.1f})"
+        ax.annotate(
+            pill_text, (x, y),
+            xytext=(x + offset_x, y + offset_y),
+            color=THEME["text_primary"], fontsize=7.5, fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor=THEME["bg_card"], edgecolor=col, alpha=0.9, linewidth=1.0),
+            arrowprops=dict(arrowstyle="-", color=col, lw=0.8, alpha=0.7),
+            ha="center", va="center", zorder=6
+        )
+
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_xlabel("RS-Ratio (Trend Strength vs Benchmark 100)", color=THEME["text_secondary"], fontsize=10, fontweight="bold", labelpad=8)
+    ax.set_ylabel("RS-Momentum (Velocity vs Benchmark 100)", color=THEME["text_secondary"], fontsize=10, fontweight="bold", labelpad=8)
+    _apply_ax_styling(ax, f"01. RRG Sector Rotation Dynamics — {universe_label}", "Relative Rotation Graph (RRG) — JdG RS-Ratio vs RS-Momentum with 6-Session Drift")
+
+    plt.tight_layout()
+    fig.savefig(target_path, dpi=150, facecolor=THEME["bg_canvas"], edgecolor="none")
+    plt.close(fig)
+    return target_path
+
+
+# ── 2. SECTOR ROTATION BUMP CHART ──
+def generate_rotation_bump_chart(
+    bars_df: Optional[pd.DataFrame],
+    target_date: str,
+    output_png: Optional[Path] = None,
+    universe_label: str = "NIFTY 500",
+) -> Path:
+    """Generates 02. Sector Rotation Trajectory Bump Chart over last 60 Sessions."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    target_path = output_png or (get_base_dir() / "reports" / "charts" / "02_rotation_bump.png")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 9), dpi=150)
+    fig.patch.set_facecolor(THEME["bg_canvas"])
+    ax.set_facecolor(THEME["bg_card"])
+
+    if bars_df is None or bars_df.empty:
+        _apply_ax_styling(ax, f"02. Sector Trajectory Bump Chart — {universe_label}", "Insufficient historical bars to compute bump chart")
+        plt.tight_layout(); fig.savefig(target_path, dpi=150); plt.close(fig)
+        return target_path
+
+    # Prepare daily ranks
+    sub = bars_df.copy()
+    sec_col = "sector" if "sector" in sub.columns else ("industry" if "industry" in sub.columns else None)
+    if not sec_col:
+        plt.close(fig); return target_path
+
+    all_dates = sorted(sub["date"].unique())
+    d_60 = all_dates[-60:]
+    sub_60 = sub[sub["date"].isin(d_60)].copy()
+
+    if "above_200" not in sub_60.columns and "ema_200" in sub_60.columns:
+        sub_60["above_200"] = sub_60["close"] > sub_60["ema_200"]
+    if "above_50" not in sub_60.columns and "ema_50" in sub_60.columns:
+        sub_60["above_50"] = sub_60["close"] > sub_60["ema_50"]
+
+    p200_col = "above_200" if "above_200" in sub_60.columns else "close"
+    p50_col = "above_50" if "above_50" in sub_60.columns else "close"
+
+    daily = sub_60.groupby(["date", sec_col]).agg(
+        p200=(p200_col, lambda s: (s > 0).mean()),
+        p50=(p50_col, lambda s: (s > 0).mean())
+    ).reset_index()
+    daily["score"] = (0.5 * daily["p200"] + 0.5 * daily["p50"]) * 100.0
+    daily["rank"] = daily.groupby("date")["score"].rank(ascending=False, method="min")
+
+    bump_pivot = daily.pivot(index="date", columns=sec_col, values="rank").sort_index()
+    if bump_pivot.empty or len(bump_pivot) < 2:
+        _apply_ax_styling(ax, f"02. Sector Trajectory Bump Chart — {universe_label}", "Insufficient time series depth")
+        plt.tight_layout(); fig.savefig(target_path, dpi=150); plt.close(fig)
+        return target_path
+
+    latest_ranks = bump_pivot.iloc[-1].sort_values()
+    top10_inds = latest_ranks.head(10).index.tolist()
+
+    x_vals = range(len(bump_pivot))
+    for idx, ind in enumerate(top10_inds):
+        col = BUMP_PALETTE[idx % len(BUMP_PALETTE)]
+        r_series = bump_pivot[ind].values
+        ax.plot(x_vals, r_series, color=col, lw=2.4, alpha=0.9, zorder=3, marker="o", markersize=3.5)
+
+        r_start, r_end = int(r_series[0]), int(r_series[-1])
+        delta = r_start - r_end
+        d_str = f"+{delta}" if delta > 0 else (f"{delta}" if delta < 0 else "0")
+
+        clean_name = ind.replace("_", " ").title()[:20]
+        ax.annotate(f"#{r_end} {clean_name} ({d_str})", (len(bump_pivot) - 1, r_end),
+                    xytext=(8, 0), textcoords="offset points", va="center", fontsize=8, fontweight="bold", color=col)
+        ax.annotate(f"#{r_start}", (0, r_start),
+                    xytext=(-8, 0), textcoords="offset points", ha="right", va="center", fontsize=7.5, color=THEME["text_muted"])
+
+    max_rank = max(11, int(latest_ranks.head(10).max()) + 1)
+    ax.set_ylim(max_rank, 0.5)
+    ax.set_yticks(range(1, min(max_rank, 12)))
+    step = max(1, len(bump_pivot) // 8)
+    ax.set_xticks(list(x_vals)[::step])
+    ax.set_xticklabels([str(d)[:10] for d in bump_pivot.index[::step]], rotation=35, fontsize=8, color=THEME["text_secondary"])
+
+    ax.set_ylabel("Industry Rank (1 = Top Leadership)", color=THEME["text_secondary"], fontsize=10, fontweight="bold")
+    _apply_ax_styling(ax, f"02. Sector Trajectory Bump Chart — {universe_label}", f"Top 10 Ranked Sectors over Last {len(bump_pivot)} Sessions (Rank #1 at Top with Net Rank Δ)")
+
+    plt.tight_layout()
+    fig.savefig(target_path, dpi=150, facecolor=THEME["bg_canvas"], edgecolor="none")
+    plt.close(fig)
+    return target_path
+
+
+# ── 3. MARKET REGIME & BREADTH MULTI-PANEL ──
+def generate_market_breadth_multipanel(
+    breadth_hist_df: Optional[pd.DataFrame],
+    target_date: str,
+    output_png: Optional[Path] = None,
+    universe_label: str = "NIFTY 500",
+) -> Path:
+    """Generates 03. Market Regime & Breadth Multi-Panel Chart."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    target_path = output_png or (get_base_dir() / "reports" / "charts" / "03_market_breadth.png")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 10), dpi=150, sharex=True, gridspec_kw={"height_ratios": [0.42, 0.29, 0.29]})
+    fig.patch.set_facecolor(THEME["bg_canvas"])
+
+    if breadth_hist_df is None or breadth_hist_df.empty:
+        for ax in (ax1, ax2, ax3): _apply_ax_styling(ax, "", "")
+        plt.tight_layout(); fig.savefig(target_path, dpi=150); plt.close(fig)
+        return target_path
+
+    m = breadth_hist_df.sort_values("Date").tail(60).reset_index(drop=True)
+    x = range(len(m))
+    dates = [str(d)[:10] for d in m["Date"]]
+
+    # Panel 1: Benchmark Regime
+    raw_bm = m["Benchmark Px"] if "Benchmark Px" in m.columns else (m["Close"] if "Close" in m.columns else np.linspace(24000, 25500, len(m)))
+    bm_px = pd.Series(raw_bm, index=x)
+    sma20 = m["SMA 20"] if "SMA 20" in m.columns else bm_px.rolling(20, min_periods=5).mean().bfill()
+    if not isinstance(sma20, pd.Series):
+        sma20 = pd.Series(sma20, index=x)
+
+    ax1.plot(x, bm_px, color=THEME["blue"], lw=2.2, label="Benchmark Close")
+    ax1.plot(x, sma20, color=THEME["amber"], lw=1.6, linestyle="--", label="20-Day SMA")
+    is_bull = float(bm_px.iloc[-1]) >= float(sma20.iloc[-1])
+    ax1.fill_between(x, min(bm_px)*0.99, max(bm_px)*1.01, color=THEME["green_tint"] if is_bull else THEME["red_tint"], alpha=0.18)
+    ax1.legend(loc="upper left", facecolor=THEME["bg_card"], edgecolor=THEME["border"], labelcolor=THEME["text_primary"], fontsize=8.5)
+    _apply_ax_styling(ax1, f"03. Market Regime & Breadth Dynamics — {universe_label}", f"Panel 1: Benchmark Close vs 20-SMA ({'🟢 BULL REGIME' if is_bull else '🔴 BEAR REGIME - CASH ACTIVE'})")
+
+    # Panel 2: Trend Participation %
+    p50 = m["% > 50 EMA"] if "% > 50 EMA" in m.columns else pd.Series(50, index=x)
+    p200 = m["% > 200 EMA"] if "% > 200 EMA" in m.columns else pd.Series(45, index=x)
+    ax2.plot(x, p50, color=THEME["cyan"], lw=1.8, label="% > 50 EMA")
+    ax2.plot(x, p200, color=THEME["purple"], lw=1.8, label="% > 200 EMA")
+    ax2.axhline(50.0, color=THEME["text_muted"], linestyle=":", lw=1.0)
+    ax2.set_ylim(0, 100)
+    ax2.set_ylabel("% Participation", color=THEME["text_secondary"], fontsize=9)
+    ax2.legend(loc="upper left", facecolor=THEME["bg_card"], edgecolor=THEME["border"], labelcolor=THEME["text_primary"], fontsize=8.5)
+    _apply_ax_styling(ax2, "", "Panel 2: Trend Breadth Participation (% > 50 EMA & % > 200 EMA)")
+
+    # Panel 3: Elite % & 52w Highs
+    ax3_twin = ax3.twinx()
+    elite = m["Elite %"] if "Elite %" in m.columns else pd.Series(10, index=x)
+    highs = m["52w Highs"] if "52w Highs" in m.columns else pd.Series(5, index=x)
+
+    ax3.plot(x, elite, color=THEME["green"], lw=2.0, label="Elite Breadth %")
+    ax3_twin.bar(x, highs, color=THEME["amber"], alpha=0.5, width=0.6, label="New 52w Highs")
+    ax3.set_ylabel("Elite %", color=THEME["green"], fontsize=9)
+    ax3_twin.set_ylabel("New 52W Highs", color=THEME["amber"], fontsize=9)
+    ax3_twin.tick_params(colors=THEME["amber"], labelsize=8.5)
+    _apply_ax_styling(ax3, "", "Panel 3: Elite Breadth % (>200 EMA & Near 52wH) & Daily 52W High Spikes")
+
+    # X-Ticks on bottom panel
+    step = max(1, len(m) // 8)
+    ax3.set_xticks(list(x)[::step])
+    ax3.set_xticklabels(dates[::step], rotation=35, fontsize=8, color=THEME["text_secondary"])
+
+    plt.tight_layout()
+    fig.savefig(target_path, dpi=150, facecolor=THEME["bg_canvas"], edgecolor="none")
+    plt.close(fig)
+    return target_path
+
+
+# ── 4. INDUSTRY HEATMAP ──
+def generate_industry_heatmap(
+    bars_df: Optional[pd.DataFrame],
+    target_date: str,
+    output_png: Optional[Path] = None,
+    universe_label: str = "NIFTY 500",
+) -> Path:
+    """Generates 04. Industry Momentum Breadth Score Heatmap across last 40 Sessions."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    target_path = output_png or (get_base_dir() / "reports" / "charts" / "04_industry_heatmap.png")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 9), dpi=150)
+    fig.patch.set_facecolor(THEME["bg_canvas"])
+    ax.set_facecolor(THEME["bg_card"])
+
+    if bars_df is None or bars_df.empty:
+        _apply_ax_styling(ax, f"04. Industry Momentum Heatmap — {universe_label}", "No bars data available")
+        plt.tight_layout(); fig.savefig(target_path, dpi=150); plt.close(fig)
+        return target_path
+
+    sub = bars_df.copy()
+    sec_col = "sector" if "sector" in sub.columns else ("industry" if "industry" in sub.columns else None)
+    if not sec_col:
+        plt.close(fig); return target_path
+
+    all_dates = sorted(sub["date"].unique())
+    d_40 = all_dates[-40:]
+    sub_40 = sub[sub["date"].isin(d_40)]
+
+    p200_col = "above_200" if "above_200" in sub_40.columns else "close"
+    p50_col = "above_50" if "above_50" in sub_40.columns else "close"
+
+    daily = sub_40.groupby(["date", sec_col]).agg(
+        p200=(p200_col, lambda s: (s > 0).mean()),
+        p50=(p50_col, lambda s: (s > 0).mean())
+    ).reset_index()
+    daily["score"] = (0.5 * daily["p200"] + 0.5 * daily["p50"]) * 100.0
+
+    heat_pivot = daily.pivot(index=sec_col, columns="date", values="score").fillna(50.0)
+    if heat_pivot.empty:
+        plt.close(fig); return target_path
+
+    # Sort industries by latest score descending
+    latest = heat_pivot.iloc[:, -1].sort_values(ascending=False)
+    heat_pivot = heat_pivot.loc[latest.index]
+
+    # Clean row labels (add star to top 5)
+    row_labels = []
+    for r, ind in enumerate(heat_pivot.index, 1):
+        clean = ind.replace("_", " ").title()[:24]
+        star = "★ " if r <= 5 else "   "
+        row_labels.append(f"{star}#{r:2d} {clean}")
+
+    im = ax.imshow(heat_pivot.values, cmap="RdYlGn", aspect="auto", vmin=15, vmax=85)
+
+    # Colorbar
+    cbar = fig.colorbar(im, ax=ax, orientation="vertical", pad=0.02, shrink=0.85)
+    cbar.ax.tick_params(colors=THEME["text_secondary"], labelsize=8)
+    cbar.set_label("Breadth Score (0-100)", color=THEME["text_secondary"], fontsize=9, fontweight="bold")
+
+    # Axes
+    ax.set_yticks(range(len(heat_pivot)))
+    ax.set_yticklabels(row_labels, fontsize=8, color=THEME["text_primary"], fontweight="medium")
+
+    step = max(1, len(d_40) // 8)
+    ax.set_xticks(range(0, len(d_40), step))
+    ax.set_xticklabels([str(d)[5:] for d in heat_pivot.columns[::step]], rotation=35, fontsize=8, color=THEME["text_secondary"])
+
+    _apply_ax_styling(ax, f"04. Industry Breadth Score Heatmap — {universe_label}", "40-Session Industry Breadth Score Heatmap sorted by Current Rank (★ = Top 5 Leaders)")
+
+    plt.tight_layout()
+    fig.savefig(target_path, dpi=150, facecolor=THEME["bg_canvas"], edgecolor="none")
+    plt.close(fig)
+    return target_path
+
+
+# ── 5. SECTOR EXCESS RETURNS ──
+def generate_excess_returns_chart(
+    sector_data: Dict,
+    output_png: Optional[Path] = None,
+    universe_label: str = "NIFTY 500",
+) -> Path:
+    """Generates 05. Sector Excess Return vs Benchmark Across Multi-Horizon Periods (1M, 3M, 6M)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    target_path = output_png or (get_base_dir() / "reports" / "charts" / "05_excess_returns.png")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 9), dpi=150)
+    fig.patch.set_facecolor(THEME["bg_canvas"])
+    ax.set_facecolor(THEME["bg_card"])
+
+    sectors = sector_data.get("sectors", [])
+    if not sectors:
+        plt.close(fig); return target_path
+
+    # Sort by 3M excess return desc
+    sorted_secs = sorted(sectors, key=lambda s: float(s.get("excess_3m", s.get("alpha_3m", 0.0))), reverse=True)[:15]
+
+    y_pos = np.arange(len(sorted_secs))
+    bar_height = 0.25
+
+    names = [s["sector"].replace("_", " ").title()[:20] for s in sorted_secs]
+    e1m = [float(s.get("excess_1m", s.get("alpha_1m", 0.0))) for s in sorted_secs]
+    e3m = [float(s.get("excess_3m", s.get("alpha_3m", 0.0))) for s in sorted_secs]
+    e6m = [float(s.get("excess_6m", s.get("alpha_6m", 0.0))) for s in sorted_secs]
+
+    b1 = ax.barh(y_pos - bar_height, e1m, height=bar_height, color=THEME["blue"], alpha=0.85, label="1M Excess %")
+    b2 = ax.barh(y_pos, e3m, height=bar_height, color=THEME["green"], alpha=0.85, label="3M Excess %")
+    b3 = ax.barh(y_pos + bar_height, e6m, height=bar_height, color=THEME["amber"], alpha=0.85, label="6M Excess %")
+
+    ax.axvline(0, color=THEME["text_muted"], linestyle="--", linewidth=1.0)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(names, fontsize=8.5, color=THEME["text_primary"], fontweight="medium")
+    ax.invert_yaxis()  # Highest at top
+
+    ax.set_xlabel("Relative Strength Alpha vs Benchmark (%)", color=THEME["text_secondary"], fontsize=9.5, fontweight="bold")
+    ax.legend(loc="lower right", facecolor=THEME["bg_card"], edgecolor=THEME["border"], labelcolor=THEME["text_primary"], fontsize=8.5)
+
+    # Bar end callouts
+    for idx, (v1, v3) in enumerate(zip(e1m, e3m)):
+        offset = 0.4 if v3 >= 0 else -0.4
+        ha = "left" if v3 >= 0 else "right"
+        ax.text(v3 + offset, idx, f"{v3:+.1f}%", va="center", ha=ha, fontsize=7.5, color=THEME["green_soft"] if v3 >= 0 else THEME["red_soft"], fontweight="bold")
+
+    _apply_ax_styling(ax, f"05. Sector Excess Return vs Benchmark Across Multi-Horizon Periods — {universe_label}", "Relative Alpha Across 1-Month, 3-Month, and 6-Month Windows (Sorted by 3M Alpha)")
+
+    plt.tight_layout()
+    fig.savefig(target_path, dpi=150, facecolor=THEME["bg_canvas"], edgecolor="none")
+    plt.close(fig)
+    return target_path
+
+
+# ── MASTER OVERVIEW DASHBOARD ──
 def generate_matplotlib_dashboard(
     breadth_data: Dict,
     sector_data: Dict,
@@ -89,596 +499,72 @@ def generate_matplotlib_dashboard(
     output_png: Optional[Path] = None,
     universe_label: str = "NIFTY 500",
 ) -> Path:
-    """
-    Generates a 3-panel institutional quantitative market overview graphic using Matplotlib:
-      Panel 1: Market Breadth Gauge & Participation Indicators
-      Panel 2: Sector 1M Alpha vs Benchmark (Sorted with collision-free labels)
-      Panel 3: Top Candidates Relative Rotation Graph (RRG) Quadrants
-    """
+    """Generates the executive 3-panel quick-look dashboard."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    base_dir = get_base_dir()
-    reports_dir = base_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_png or (reports_dir / "market_overview_chart.png")
+    target_path = output_png or (get_base_dir() / "reports" / "charts" / "market_overview_chart.png")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    as_of = breadth_data.get("as_of_date", "LIVE")
-    regime = breadth_data.get("regime", {})
-    regime_str = regime.get("label", "NORMAL (AGGRESSIVE)")
-    clean_regime = regime_str.replace("🟢", "").replace("🔴", "").replace("🟡", "").strip()
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(19, 6.2), dpi=150)
+    fig.patch.set_facecolor(THEME["bg_canvas"])
 
-    fig, axes = plt.subplots(1, 3, figsize=(21, 6.8), facecolor=THEME["bg_canvas"])
-    fig.suptitle(
-        f"PROJECT MIP: QUANTITATIVE DESK OVERVIEW  •  {as_of}",
-        fontsize=15,
-        fontweight="bold",
-        color=THEME["text_primary"],
-        x=0.05,
-        y=0.97,
-        ha="left",
-    )
-    fig.text(
-        0.05, 0.93,
-        f"Target Universe: {universe_label}  |  Benchmark Regime: {clean_regime}  |  Survivorship-Free Point-In-Time Architecture",
-        fontsize=9.5,
-        color=THEME["text_secondary"],
-        ha="left",
-    )
-    fig.text(
-        0.95, 0.02,
-        "Source: Project MIP Quantitative Desk • NSE Bhavcopy Archives • Algorithmic Factor Engine",
-        fontsize=8,
-        color=THEME["text_muted"],
-        ha="right",
-    )
+    # Panel 1: Breadth
+    pct_200 = float(breadth_data.get("pct_above_200_ema", 50.0))
+    pct_50 = float(breadth_data.get("pct_above_50_ema", 50.0))
+    pct_20 = float(breadth_data.get("pct_above_20_ema", 50.0))
+    near_52w = float(breadth_data.get("pct_within_20pct_52wh", 50.0))
+    net_highs = int(breadth_data.get("net_52w_highs", 0))
 
-    # ── Panel 1: Market Breadth Indicators ──
-    ax1 = axes[0]
-    _apply_ax_styling(ax1, "MARKET BREADTH PARTICIPATION", "Trend Alignment & 52-Week High Proximity")
-    tp = breadth_data.get("trend_participation", {})
-    hp = breadth_data.get("high_proximity", {})
+    b_labels = ["Trend (>200 EMA)", "Momentum (>50 EMA)", "Short-Term (>20 EMA)", "Proximity (Near 52wH)"]
+    b_vals = [pct_200, pct_50, pct_20, near_52w]
+    b_colors = [THEME["green"] if v >= 50 else THEME["red"] for v in b_vals]
 
-    breadth_metrics = [
-        ("% > 200 EMA", tp.get("pct_above_200_ema", 0.0), "Long-Term Trend"),
-        ("% > 50 EMA", tp.get("pct_above_50_ema", 0.0), "Medium-Term Trend"),
-        ("% > 20 EMA", tp.get("pct_above_20_ema", 0.0), "Short Momentum"),
-        ("Within 20% 52wH", hp.get("pct_within_20pct_52wh", 0.0), "High Proximity"),
-        ("Within 5% 52wH", hp.get("pct_within_5pct_52wh", 0.0), "Breakout Zone"),
-    ]
-    labels = [m[0] for m in reversed(breadth_metrics)]
-    values = [m[1] for m in reversed(breadth_metrics)]
-    sub_labels = [m[2] for m in reversed(breadth_metrics)]
+    y_pos = range(len(b_labels))
+    ax1.barh(y_pos, b_vals, color=b_colors, height=0.45, alpha=0.9)
+    ax1.set_xlim(0, 100)
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(b_labels, fontsize=8.5, color=THEME["text_primary"], fontweight="medium")
+    ax1.axvline(50, color=THEME["text_muted"], linestyle="--", linewidth=1.0)
+    for i, v in enumerate(b_vals):
+        ax1.text(v + 1.5, i, f"{v:.1f}%", va="center", fontsize=8.5, color=THEME["text_primary"], fontweight="bold")
+    _apply_ax_styling(ax1, "Market Breadth & Participation", f"Net 52w Highs: {net_highs:+d} | Target Universe: {universe_label}")
 
-    # Shaded regime zones
-    ax1.axvspan(60, 100, color=THEME["green"], alpha=0.08, label="Expansion (>60%)")
-    ax1.axvspan(40, 60, color=THEME["text_muted"], alpha=0.04, label="Neutral (40-60%)")
-    ax1.axvspan(0, 40, color=THEME["red"], alpha=0.08, label="Contraction (<40%)")
+    # Panel 2: Sector Alpha
+    sectors = sector_data.get("sectors", [])[:10]
+    if sectors:
+        s_names = [s["sector"].replace("_", " ").title()[:15] for s in sectors]
+        s_alpha = [float(s.get("alpha_1m", 0.0)) for s in sectors]
+        s_colors = [THEME["green"] if a >= 0 else THEME["red"] for a in s_alpha]
+        sy_pos = range(len(s_names))
+        ax2.barh(sy_pos, s_alpha, color=s_colors, height=0.5, alpha=0.9)
+        ax2.set_yticks(sy_pos)
+        ax2.set_yticklabels(s_names, fontsize=8, color=THEME["text_primary"])
+        ax2.axvline(0, color=THEME["text_muted"], linestyle="--", linewidth=1.0)
+        ax2.invert_yaxis()
+        for i, a in enumerate(s_alpha):
+            offset = 0.2 if a >= 0 else -0.2
+            ha = "left" if a >= 0 else "right"
+            ax2.text(a + offset, i, f"{a:+.1f}%", va="center", ha=ha, fontsize=7.5, color=THEME["text_primary"], fontweight="bold")
+    _apply_ax_styling(ax2, "Top Sector Alpha (1-Month)", "Equal-Weighted Relative Alpha vs NIFTY 500")
 
-    bar_colors = [THEME["green"] if v >= 50.0 else THEME["red"] for v in values]
-    bars = ax1.barh(labels, values, color=bar_colors, height=0.52, edgecolor=THEME["border"], linewidth=1.0, zorder=3)
-    ax1.axvline(50, color=THEME["text_secondary"], linestyle="--", linewidth=1.1, alpha=0.8, zorder=4)
+    # Panel 3: Candidates RRG Scatter
+    if top_df is not None and not top_df.empty:
+        c_x = top_df.get("rrg_rs_ratio", pd.Series(100, index=top_df.index))
+        c_y = top_df.get("rrg_rs_momentum", pd.Series(100, index=top_df.index))
+        ax3.scatter(c_x, c_y, color=THEME["blue"], s=100, edgecolors=THEME["text_primary"], linewidth=1.0, alpha=0.85)
+        ax3.axvline(100, color=THEME["text_muted"], linestyle="--", linewidth=1.0)
+        ax3.axhline(100, color=THEME["text_muted"], linestyle="--", linewidth=1.0)
+        for _, r in top_df.head(10).iterrows():
+            ax3.annotate(str(r["symbol"]), (r.get("rrg_rs_ratio", 100), r.get("rrg_rs_momentum", 100)),
+                         fontsize=7.5, color=THEME["text_primary"], xytext=(3, 3), textcoords="offset points")
+    _apply_ax_styling(ax3, "Top Candidates Momentum (RRG)", "Top 20 Volar Momentum Candidates Scatter")
 
-    ax1.set_xlim(0, 105)
-    for bar, val, sub in zip(bars, values, sub_labels):
-        x_pos = val + 2.0 if val < 75 else val - 12.0
-        txt_col = THEME["text_primary"] if val < 75 else "#FFFFFF"
-        status_tag = "BULL" if val >= 50 else "BEAR"
-        ax1.text(
-            val + 2.0,
-            bar.get_y() + bar.get_height() / 2,
-            f"{val:.1f}%  [{status_tag}]",
-            va="center",
-            color=THEME["text_primary"],
-            fontweight="bold",
-            fontsize=9.5,
-            zorder=5,
-        )
-
-    # ── Panel 2: Sector Alpha vs Benchmark (1M) ──
-    ax2 = axes[1]
-    _apply_ax_styling(ax2, "SECTOR 1M ALPHA VS BENCHMARK", "1-Month Excess Return Relative to NIFTY 500 (%)")
-    sectors = sector_data.get("sectors", [])[:9]
-    # Sort so best performing is on top
-    sectors_sorted = sorted(sectors, key=lambda s: float(s.get("alpha_1m", 0.0)))
-    sec_names = [s["sector"] for s in sectors_sorted]
-    sec_alphas = [float(s.get("alpha_1m", 0.0)) for s in sectors_sorted]
-    sec_colors = [THEME["green"] if a >= 0 else THEME["red"] for a in sec_alphas]
-
-    bars2 = ax2.barh(sec_names, sec_alphas, color=sec_colors, height=0.52, edgecolor=THEME["border"], linewidth=1.0, zorder=3)
-    ax2.axvline(0, color=THEME["text_primary"], linestyle="-", linewidth=1.2, alpha=0.9, zorder=4)
-
-    min_a = min(sec_alphas) if sec_alphas else -5.0
-    max_a = max(sec_alphas) if sec_alphas else 5.0
-    pad_a = max(2.5, max(abs(min_a), abs(max_a)) * 0.35)
-    ax2.set_xlim(min_a - pad_a, max_a + pad_a)
-
-    for bar, a in zip(bars2, sec_alphas):
-        if a >= 0:
-            ax2.text(
-                a + 0.25,
-                bar.get_y() + bar.get_height() / 2,
-                f"+{a:.2f}%",
-                va="center",
-                ha="left",
-                color=THEME["green_soft"],
-                fontweight="bold",
-                fontsize=9.5,
-                zorder=5,
-            )
-        else:
-            ax2.text(
-                a - 0.25,
-                bar.get_y() + bar.get_height() / 2,
-                f"{a:.2f}%",
-                va="center",
-                ha="right",
-                color=THEME["red_soft"],
-                fontweight="bold",
-                fontsize=9.5,
-                zorder=5,
-            )
-
-    # ── Panel 3: Relative Rotation Graph (RRG) Quadrants (Top 20 Candidates) ──
-    ax3 = axes[2]
-    _apply_ax_styling(ax3, "TOP CANDIDATES RRG SCATTER", "RS-Ratio vs RS-Momentum Relative to Benchmark")
-
-    # Fixed clean boundaries centered on 100
-    x_vals = top_df["rrg_rs_ratio"].dropna().tolist() if not top_df.empty and "rrg_rs_ratio" in top_df.columns else [100]
-    y_vals = top_df["rrg_rs_momentum"].dropna().tolist() if not top_df.empty and "rrg_rs_momentum" in top_df.columns else [100]
-
-    min_x, max_x = min(x_vals), max(x_vals)
-    min_y, max_y = min(y_vals), max(y_vals)
-    span_x = max(10.0, (max_x - min_x) * 1.3)
-    span_y = max(10.0, (max_y - min_y) * 1.3)
-
-    lim_x0 = min(92.0, min_x - 3.0)
-    lim_x1 = max(108.0, max_x + 3.0)
-    lim_y0 = min(92.0, min_y - 3.0)
-    lim_y1 = max(108.0, max_y + 3.0)
-
-    ax3.set_xlim(lim_x0, lim_x1)
-    ax3.set_ylim(lim_y0, lim_y1)
-
-    ax3.axhline(100, color=THEME["text_muted"], linestyle="--", linewidth=1.1, zorder=2)
-    ax3.axvline(100, color=THEME["text_muted"], linestyle="--", linewidth=1.1, zorder=2)
-
-    # Quadrant Shading using actual plot limits
-    ax3.fill_between([100, lim_x1 + 10], 100, lim_y1 + 10, color=THEME["green"], alpha=0.08, zorder=1)
-    ax3.fill_between([lim_x0 - 10, 100], 100, lim_y1 + 10, color=THEME["blue"], alpha=0.08, zorder=1)
-    ax3.fill_between([100, lim_x1 + 10], lim_y0 - 10, 100, color=THEME["amber"], alpha=0.08, zorder=1)
-    ax3.fill_between([lim_x0 - 10, 100], lim_y0 - 10, 100, color=THEME["red"], alpha=0.08, zorder=1)
-
-    # Quadrant Title Badges inside the plot frame using axes coordinates
-    q_badge_props = dict(boxstyle="round,pad=0.35", alpha=0.85, linewidth=0.8)
-    ax3.text(0.96, 0.95, "LEADING", transform=ax3.transAxes, ha="right", va="top", color=THEME["green_soft"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["green"], **q_badge_props))
-    ax3.text(0.04, 0.95, "IMPROVING", transform=ax3.transAxes, ha="left", va="top", color=THEME["blue"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["blue"], **q_badge_props))
-    ax3.text(0.96, 0.05, "WEAKENING", transform=ax3.transAxes, ha="right", va="bottom", color=THEME["amber"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["amber"], **q_badge_props))
-    ax3.text(0.04, 0.05, "LAGGING", transform=ax3.transAxes, ha="left", va="bottom", color=THEME["red_soft"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["red"], **q_badge_props))
-
-    # Scatter points with collision-free labels
-    if not top_df.empty and "rrg_rs_ratio" in top_df.columns:
-        quad_colors = {
-            "LEADING": THEME["green"],
-            "IMPROVING": THEME["blue"],
-            "WEAKENING": THEME["amber"],
-            "LAGGING": THEME["red"],
-        }
-        for idx, (_, r) in enumerate(top_df.iterrows()):
-            rx = float(r.get("rrg_rs_ratio", 100.0))
-            ry = float(r.get("rrg_rs_momentum", 100.0))
-            q = str(r.get("rrg_quadrant", "WEAKENING"))
-            c = quad_colors.get(q, THEME["blue"])
-            vs = float(r.get("volar_score", 1.0))
-            pt_size = max(50, min(220, int(vs * 35)))
-
-            ax3.scatter(rx, ry, color=c, s=pt_size, edgecolors="#FFFFFF", linewidth=1.2, alpha=0.9, zorder=5)
-
-            # Annotate top 8 candidates with alternating offset angles
-            if idx < 8:
-                offsets = [(6, 6), (6, -12), (-12, 6), (-12, -12), (10, 0), (-14, 0), (0, 10), (0, -14)]
-                dx, dy = offsets[idx % len(offsets)]
-                ax3.annotate(
-                    r["symbol"],
-                    (rx, ry),
-                    xytext=(dx, dy),
-                    textcoords="offset points",
-                    color="#FFFFFF",
-                    fontsize=8.5,
-                    fontweight="bold",
-                    zorder=6,
-                    bbox=dict(boxstyle="round,pad=0.2", facecolor=THEME["bg_card"], edgecolor=c, alpha=0.85, linewidth=0.6),
-                )
-
-    ax3.set_xlabel("RS-Ratio (Trend Relative to Benchmark)", color=THEME["text_secondary"], fontsize=9.5)
-    ax3.set_ylabel("RS-Momentum (Velocity of Change)", color=THEME["text_secondary"], fontsize=9.5)
-
-    plt.tight_layout(rect=[0.02, 0.04, 0.98, 0.92])
-    plt.savefig(out_path, dpi=220, facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.tight_layout()
+    fig.savefig(target_path, dpi=150, facecolor=THEME["bg_canvas"], edgecolor="none")
     plt.close(fig)
-    print(f"✓ Institutional Matplotlib dashboard exported: {out_path}")
-    return out_path
-
-
-def generate_sector_rotation_history_chart(
-    sector_data: Dict,
-    ind_hist_df: Optional[pd.DataFrame] = None,
-    output_png: Optional[Path] = None,
-    universe_label: str = "NIFTY 500",
-) -> Path:
-    """
-    Generates an institutional 2-panel Sector Rotation & Trajectory graphic:
-      Panel 1: Relative Rotation Graph (RRG) across all 12 Primary Sectors with smart label offset.
-      Panel 2: Sector Breadth Trajectory (% > 200 EMA) with end-of-line callouts and regime zones.
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    base_dir = get_base_dir()
-    reports_dir = base_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_png or (reports_dir / "sector_rotation_history.png")
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(21, 8.5), facecolor=THEME["bg_canvas"])
-    fig.suptitle(
-        f"PROJECT MIP: SECTOR ROTATION & RELATIVE ROTATION GRAPH (RRG)",
-        fontsize=15,
-        fontweight="bold",
-        color=THEME["text_primary"],
-        x=0.04,
-        y=0.97,
-        ha="left",
-    )
-    fig.text(
-        0.04, 0.935,
-        f"Target Universe: {universe_label}  |  Dynamic Benchmark Alignment  |  30-Session Trend & Breadth Trajectory",
-        fontsize=9.5,
-        color=THEME["text_secondary"],
-        ha="left",
-    )
-    fig.text(
-        0.96, 0.02,
-        "Source: Project MIP Quantitative Desk • Multi-Sector Factor Rotation Engine",
-        fontsize=8,
-        color=THEME["text_muted"],
-        ha="right",
-    )
-
-    # ── Panel 1: Primary Sector RRG Quadrants ──
-    _apply_ax_styling(ax1, "PRIMARY SECTOR RELATIVE ROTATION GRAPH", "Bubble Area = Sector Equities Count | Quadrant Threshold = 100.0")
-
-    sec_list = sector_data.get("sectors", [])
-    x_pts = [float(s.get("rrg_rs_ratio", 100.0)) for s in sec_list] if sec_list else [100.0]
-    y_pts = [float(s.get("rrg_rs_momentum", 100.0)) for s in sec_list] if sec_list else [100.0]
-
-    min_x, max_x = min(x_pts), max(x_pts)
-    min_y, max_y = min(y_pts), max(y_pts)
-    pad_x = max(2.5, (max_x - min_x) * 0.4)
-    pad_y = max(2.5, (max_y - min_y) * 0.4)
-
-    lim_x0 = min(94.0, min_x - pad_x)
-    lim_x1 = max(106.0, max_x + pad_x)
-    lim_y0 = min(94.0, min_y - pad_y)
-    lim_y1 = max(106.0, max_y + pad_y)
-
-    ax1.set_xlim(lim_x0, lim_x1)
-    ax1.set_ylim(lim_y0, lim_y1)
-
-    ax1.axhline(100, color=THEME["text_muted"], linestyle="--", linewidth=1.2, zorder=2)
-    ax1.axvline(100, color=THEME["text_muted"], linestyle="--", linewidth=1.2, zorder=2)
-
-    # Quadrant Shading
-    ax1.fill_between([100, lim_x1 + 10], 100, lim_y1 + 10, color=THEME["green"], alpha=0.08, zorder=1)
-    ax1.fill_between([lim_x0 - 10, 100], 100, lim_y1 + 10, color=THEME["blue"], alpha=0.08, zorder=1)
-    ax1.fill_between([100, lim_x1 + 10], lim_y0 - 10, 100, color=THEME["amber"], alpha=0.08, zorder=1)
-    ax1.fill_between([lim_x0 - 10, 100], lim_y0 - 10, 100, color=THEME["red"], alpha=0.08, zorder=1)
-
-    # Institutional Corner Badges
-    q_props = dict(boxstyle="round,pad=0.4", alpha=0.88, linewidth=0.8)
-    ax1.text(0.96, 0.95, "LEADING\n(Overweight / Core Long)", transform=ax1.transAxes, ha="right", va="top", color=THEME["green_soft"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["green"], **q_props))
-    ax1.text(0.04, 0.95, "IMPROVING\n(Accumulate / Early Turn)", transform=ax1.transAxes, ha="left", va="top", color=THEME["blue"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["blue"], **q_props))
-    ax1.text(0.96, 0.05, "WEAKENING\n(Reduce / Tighten Stops)", transform=ax1.transAxes, ha="right", va="bottom", color=THEME["amber"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["amber"], **q_props))
-    ax1.text(0.04, 0.05, "LAGGING\n(Avoid / Underweight)", transform=ax1.transAxes, ha="left", va="bottom", color=THEME["red_soft"], fontweight="bold", fontsize=9, bbox=dict(facecolor=THEME["bg_card"], edgecolor=THEME["red"], **q_props))
-
-    # Fan out sector callouts gracefully into open quadrant territory
-    sec_acronyms = {
-        "PHARMA": "PH", "METALS": "MT", "AUTO": "AU", "CAPGOODS": "CG",
-        "CONSDUR": "CD", "ENERGY": "EN", "IT": "IT", "FINSERV": "FS",
-        "FMCG": "FM", "REALTY": "RL", "CHEMICALS": "CH", "INFRA_MEDIA": "IM"
-    }
-
-    # Group sectors by quadrant to fan out callouts
-    quad_groups = {"LEADING": [], "IMPROVING": [], "WEAKENING": [], "LAGGING": []}
-    for s in sec_list:
-        rx = float(s.get("rrg_rs_ratio", 100.0))
-        ry = float(s.get("rrg_rs_momentum", 100.0))
-        if rx >= 100 and ry >= 100:
-            quad_groups["LEADING"].append(s)
-        elif rx < 100 and ry >= 100:
-            quad_groups["IMPROVING"].append(s)
-        elif rx >= 100 and ry < 100:
-            quad_groups["WEAKENING"].append(s)
-        else:
-            quad_groups["LAGGING"].append(s)
-
-    quad_vectors = {
-        "LEADING": (1, 1),
-        "IMPROVING": (-1, 1),
-        "WEAKENING": (1, -1),
-        "LAGGING": (-1, -1),
-    }
-
-    for q_name, s_group in quad_groups.items():
-        vx, vy = quad_vectors[q_name]
-        # Sort by distance from center
-        s_group_sorted = sorted(s_group, key=lambda s: (float(s.get("rrg_rs_ratio", 100))-100)**2 + (float(s.get("rrg_rs_momentum", 100))-100)**2)
-        for i, s in enumerate(s_group_sorted):
-            sec = s["sector"]
-            rx = float(s.get("rrg_rs_ratio", 100.0))
-            ry = float(s.get("rrg_rs_momentum", 100.0))
-            c = SECTOR_PALETTE.get(sec, THEME["blue"])
-            count = int(s.get("stock_count", s.get("total_symbols", 30)))
-            bubble_size = max(180, min(580, count * 8))
-
-            ax1.scatter(rx, ry, color=c, s=bubble_size, edgecolors="#FFFFFF", linewidth=1.5, alpha=0.9, zorder=5)
-            acr = sec_acronyms.get(sec, sec[:2])
-            ax1.text(rx, ry, acr, color="#FFFFFF", fontweight="bold", fontsize=8.5, ha="center", va="center", zorder=6)
-
-            # Stagger callouts radially away from (100, 100)
-            base_dist_x = 32 + (i * 26)
-            base_dist_y = 16 + (i * 18)
-            ox = vx * base_dist_x
-            oy = vy * base_dist_y
-
-            ax1.annotate(
-                f"{sec} ({rx:.1f}, {ry:.1f})",
-                (rx, ry),
-                xytext=(ox, oy),
-                textcoords="offset points",
-                color="#FFFFFF",
-                fontweight="bold",
-                fontsize=8.5,
-                ha="left" if vx > 0 else "right",
-                va="center",
-                zorder=7,
-                arrowprops=dict(arrowstyle="->", color=c, lw=0.9, alpha=0.85),
-                bbox=dict(boxstyle="round,pad=0.25", facecolor=THEME["bg_card"], edgecolor=c, alpha=0.95, linewidth=0.8),
-            )
-
-    ax1.set_xlabel("RS-Ratio (Relative Strength vs Nifty Benchmark)", color=THEME["text_secondary"], fontsize=9.5)
-    ax1.set_ylabel("RS-Momentum (Rate of Relative Change)", color=THEME["text_secondary"], fontsize=9.5)
-
-    # ── Panel 2: Sector Breadth Trajectory Over 30 Sessions ──
-    _apply_ax_styling(ax2, "TOP SECTOR BREADTH TRAJECTORY", "30-Day Trend Participation (% of Equities > 200 EMA)")
-
-    # Regime Shading for Breadth
-    ax2.axhspan(60, 100, color=THEME["green"], alpha=0.08, label="Expansion (>60%)")
-    ax2.axhspan(40, 60, color=THEME["text_muted"], alpha=0.04, label="Neutral (40-60%)")
-    ax2.axhspan(0, 40, color=THEME["red"], alpha=0.08, label="Contraction (<40%)")
-
-    ax2.axhline(60, color=THEME["green"], linestyle=":", linewidth=1.0, alpha=0.6)
-    ax2.axhline(50, color=THEME["text_secondary"], linestyle="--", linewidth=1.2, alpha=0.7)
-    ax2.axhline(40, color=THEME["red"], linestyle=":", linewidth=1.0, alpha=0.6)
-
-    if ind_hist_df is not None and not ind_hist_df.empty and "Date" in ind_hist_df.columns:
-        dates = sorted(ind_hist_df["Date"].unique())
-        top_secs = [s["sector"] for s in sec_list[:6]]
-        end_callouts = []
-
-        for idx, sec in enumerate(top_secs):
-            s_data = ind_hist_df[ind_hist_df["Sector"] == sec].sort_values("Date")
-            if not s_data.empty:
-                col = SECTOR_PALETTE.get(sec, THEME["blue"])
-                ax2.plot(
-                    s_data["Date"],
-                    s_data["% > 200 EMA"],
-                    label=sec,
-                    color=col,
-                    linewidth=2.4,
-                    marker="o",
-                    markersize=4.0,
-                    alpha=0.95,
-                    zorder=4,
-                )
-                last_val = s_data["% > 200 EMA"].iloc[-1]
-                end_callouts.append((sec, last_val, col))
-
-        # Adjust overlapping end labels vertically
-        end_callouts.sort(key=lambda x: x[1])
-        staggered_y = []
-        for i, (sec, val, col) in enumerate(end_callouts):
-            y_target = val
-            if staggered_y and abs(y_target - staggered_y[-1]) < 3.5:
-                y_target = staggered_y[-1] + 3.8
-            staggered_y.append(y_target)
-            ax2.annotate(
-                f"{sec}: {val:.1f}%",
-                (len(dates) - 1, val),
-                xytext=(len(dates) - 1 + 0.3, y_target),
-                color="#FFFFFF",
-                fontsize=8,
-                fontweight="bold",
-                va="center",
-                zorder=6,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor=THEME["bg_card"], edgecolor=col, alpha=0.9, linewidth=0.8),
-            )
-
-        ax2.set_ylim(0, 105)
-        step = max(1, len(dates) // 7)
-        tick_dates = dates[::step]
-        if dates[-1] not in tick_dates:
-            tick_dates.append(dates[-1])
-        ax2.set_xticks(tick_dates)
-        ax2.set_xticklabels([d[5:] for d in tick_dates], rotation=25, ha="right", color=THEME["text_secondary"])
-        ax2.set_ylabel("% Above 200 EMA", color=THEME["text_secondary"], fontsize=9.5)
-        ax2.legend(loc="upper left", facecolor=THEME["bg_card"], edgecolor=THEME["border"], labelcolor=THEME["text_primary"], fontsize=8.5, ncol=2)
-    else:
-        ax2.text(0.5, 0.5, "Industry History Time-Series Actively Accumulating", color=THEME["text_muted"], ha="center", va="center", transform=ax2.transAxes)
-
-    plt.tight_layout(rect=[0.02, 0.04, 0.98, 0.92])
-    plt.savefig(out_path, dpi=220, facecolor=fig.get_facecolor(), edgecolor="none")
-    plt.close(fig)
-    print(f"✓ Institutional Sector rotation history chart exported: {out_path}")
-    return out_path
-
-
-def generate_market_breadth_history_chart(
-    breadth_hist_df: pd.DataFrame,
-    output_png: Optional[Path] = None,
-    universe_label: str = "NIFTY 500",
-) -> Path:
-    """
-    Generates an institutional 2-panel Market Breadth & Net Highs Historical Trend graphic:
-      Panel 1: Trend Participation (% > 200, 50, 20 EMA) over 60 sessions with regime bands.
-      Panel 2: 52-Week Net Highs/Lows Daily Bars & 5-Day Smoothed Trend Line with area fill.
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    base_dir = get_base_dir()
-    reports_dir = base_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_png or (reports_dir / "market_breadth_history.png")
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(21, 10.5), facecolor=THEME["bg_canvas"], sharex=True)
-    fig.suptitle(
-        f"PROJECT MIP: MARKET BREADTH & PARTICIPATION DYNAMICS",
-        fontsize=15,
-        fontweight="bold",
-        color=THEME["text_primary"],
-        x=0.04,
-        y=0.97,
-        ha="left",
-    )
-    fig.text(
-        0.04, 0.945,
-        f"Target Universe: {universe_label}  |  60-Session Empirical Trend Participation & Net 52-Week Expansion Pressure",
-        fontsize=9.5,
-        color=THEME["text_secondary"],
-        ha="left",
-    )
-    fig.text(
-        0.96, 0.02,
-        "Source: Project MIP Quantitative Desk • Institutional Breadth Engine • Point-In-Time Survivorship-Free",
-        fontsize=8,
-        color=THEME["text_muted"],
-        ha="right",
-    )
-
-    if breadth_hist_df is not None and not breadth_hist_df.empty and "Date" in breadth_hist_df.columns:
-        b_df = breadth_hist_df.sort_values("Date").reset_index(drop=True)
-        dates = b_df["Date"].tolist()
-        x_indices = np.arange(len(dates))
-
-        # ── Panel 1: Trend Participation ──
-        _apply_ax_styling(ax1, "60-SESSION MARKET BREADTH PARTICIPATION", "Percentage of Equities Trading Above Key Exponential Moving Averages")
-
-        # Shaded Regime Bands
-        ax1.axhspan(60, 100, color=THEME["green"], alpha=0.08)
-        ax1.axhspan(40, 60, color=THEME["text_muted"], alpha=0.04)
-        ax1.axhspan(0, 40, color=THEME["red"], alpha=0.08)
-
-        ax1.text(0.98, 0.85, "EXPANSION REGIME (>60%)", transform=ax1.transAxes, ha="right", color=THEME["green_soft"], fontsize=8, fontweight="bold", alpha=0.8)
-        ax1.text(0.98, 0.50, "NEUTRAL REGIME (40-60%)", transform=ax1.transAxes, ha="right", color=THEME["text_secondary"], fontsize=8, fontweight="bold", alpha=0.8)
-        ax1.text(0.98, 0.15, "DEFENSIVE REGIME (<40%)", transform=ax1.transAxes, ha="right", color=THEME["red_soft"], fontsize=8, fontweight="bold", alpha=0.8)
-
-        # Plot 3 moving average breadth lines
-        ax1.plot(x_indices, b_df["% > 200 EMA"], label="> 200 EMA (Primary Structural Trend)", color=THEME["green"], linewidth=2.6, zorder=4)
-        ax1.plot(x_indices, b_df["% > 50 EMA"], label="> 50 EMA (Medium-Term Cycle)", color=THEME["blue"], linewidth=2.0, zorder=4)
-        ax1.plot(x_indices, b_df["% > 20 EMA"], label="> 20 EMA (Short-Term Tactical Momentum)", color=THEME["amber"], linewidth=1.8, linestyle=":", zorder=4)
-
-        # Threshold lines
-        ax1.axhline(60, color=THEME["green"], linestyle=":", linewidth=1.0, alpha=0.6)
-        ax1.axhline(50, color=THEME["text_primary"], linestyle="--", linewidth=1.2, alpha=0.7)
-        ax1.axhline(40, color=THEME["red"], linestyle=":", linewidth=1.0, alpha=0.6)
-
-        # End of series value callout badges
-        last_x = len(dates) - 1
-        p200_val = b_df["% > 200 EMA"].iloc[-1]
-        p50_val = b_df["% > 50 EMA"].iloc[-1]
-        p20_val = b_df["% > 20 EMA"].iloc[-1]
-
-        ax1.scatter([last_x], [p200_val], color=THEME["green"], s=45, zorder=6)
-        ax1.scatter([last_x], [p50_val], color=THEME["blue"], s=45, zorder=6)
-        ax1.scatter([last_x], [p20_val], color=THEME["amber"], s=45, zorder=6)
-
-        callouts = [
-            (p200_val, f"200 EMA: {p200_val:.1f}%", THEME["green"]),
-            (p50_val, f"50 EMA: {p50_val:.1f}%", THEME["blue"]),
-            (p20_val, f"20 EMA: {p20_val:.1f}%", THEME["amber"]),
-        ]
-        for val, txt, col in callouts:
-            ax1.annotate(
-                txt,
-                (last_x, val),
-                xytext=(8, 0),
-                textcoords="offset points",
-                color="#FFFFFF",
-                fontsize=8.5,
-                fontweight="bold",
-                va="center",
-                bbox=dict(boxstyle="round,pad=0.25", facecolor=THEME["bg_card"], edgecolor=col, alpha=0.92, linewidth=0.8),
-                zorder=7,
-            )
-
-        ax1.set_ylim(0, 105)
-        ax1.set_ylabel("Breadth Participation %", color=THEME["text_secondary"], fontsize=9.5)
-        ax1.legend(loc="upper left", facecolor=THEME["bg_card"], edgecolor=THEME["border"], labelcolor=THEME["text_primary"], fontsize=8.5, ncol=3)
-
-        # ── Panel 2: Net 52-Week Highs / Lows ──
-        _apply_ax_styling(ax2, "52-WEEK NET HIGHS DYNAMICS", "Daily New 52-Week Highs minus Lows & 5-Session Smoothed Trajectory")
-
-        net_highs = b_df["Net Highs"].values
-        bar_colors = [THEME["green"] if v >= 0 else THEME["red"] for v in net_highs]
-        ax2.bar(x_indices, net_highs, color=bar_colors, width=0.68, edgecolor=THEME["border"], linewidth=0.8, zorder=3)
-        ax2.axhline(0, color=THEME["text_primary"], linestyle="-", linewidth=1.2, alpha=0.9, zorder=4)
-
-        # 5-day rolling average of Net Highs with shaded regime fill
-        if len(net_highs) >= 3:
-            roll_net = pd.Series(net_highs).rolling(5, min_periods=1).mean().values
-            ax2.plot(x_indices, roll_net, color=THEME["cyan"], linewidth=2.4, label="5-Session Rolling Net Highs", zorder=5)
-            ax2.fill_between(x_indices, 0, roll_net, where=(roll_net >= 0), color=THEME["green"], alpha=0.15, zorder=2)
-            ax2.fill_between(x_indices, 0, roll_net, where=(roll_net < 0), color=THEME["red"], alpha=0.15, zorder=2)
-
-            # Latest reading badge
-            latest_net = net_highs[-1]
-            latest_roll = roll_net[-1]
-            ax2.annotate(
-                f"Latest Net: {latest_net:+d}  |  5D MA: {latest_roll:+.1f}",
-                (last_x, latest_net),
-                xytext=(0, 20 if latest_net >= 0 else -25),
-                textcoords="offset points",
-                ha="center",
-                color="#FFFFFF",
-                fontsize=8.5,
-                fontweight="bold",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor=THEME["bg_card"], edgecolor=THEME["cyan"], alpha=0.95, linewidth=1.0),
-                arrowprops=dict(arrowstyle="->", color=THEME["cyan"], lw=1.0),
-                zorder=7,
-            )
-            ax2.legend(loc="upper left", facecolor=THEME["bg_card"], edgecolor=THEME["border"], labelcolor=THEME["text_primary"], fontsize=8.5)
-
-        ax2.set_ylabel("Net Highs (Highs - Lows)", color=THEME["text_secondary"], fontsize=9.5)
-
-        # Format X-axis
-        step = max(1, len(dates) // 8)
-        tick_indices = list(range(0, len(dates), step))
-        if (len(dates) - 1) not in tick_indices:
-            tick_indices.append(len(dates) - 1)
-        ax2.set_xticks(tick_indices)
-        ax2.set_xticklabels([dates[i][5:] for i in tick_indices], rotation=25, ha="right", color=THEME["text_secondary"])
-    else:
-        ax1.text(0.5, 0.5, "Breadth History Time-Series Actively Accumulating", color=THEME["text_muted"], ha="center", transform=ax1.transAxes)
-        ax2.text(0.5, 0.5, "Breadth History Time-Series Actively Accumulating", color=THEME["text_muted"], ha="center", transform=ax2.transAxes)
-
-    plt.tight_layout(rect=[0.02, 0.04, 0.98, 0.93])
-    plt.savefig(out_path, dpi=220, facecolor=fig.get_facecolor(), edgecolor="none")
-    plt.close(fig)
-    print(f"✓ Institutional Market breadth history chart exported: {out_path}")
-    return out_path
+    return target_path
 
 
 def generate_plotly_tearsheet(
@@ -688,9 +574,7 @@ def generate_plotly_tearsheet(
     output_html: Optional[Path] = None,
     universe_label: str = "NIFTY 500",
 ) -> Path:
-    """
-    Generates a mobile-friendly interactive Plotly HTML tearsheet.
-    """
+    """Generates a mobile-friendly interactive Plotly HTML tearsheet."""
     base_dir = get_base_dir()
     reports_dir = base_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -704,7 +588,7 @@ def generate_plotly_tearsheet(
             rows=2, cols=2,
             subplot_titles=(
                 "Market Breadth Participation (%)",
-                "Sector Alpha 1M vs NIFTY 500",
+                "Sector Alpha 1M vs Benchmark",
                 "Top Momentum Candidates RRG Scatter",
                 "Sector Internal Breadth (% > 200 EMA)"
             ),
@@ -780,7 +664,6 @@ def generate_plotly_tearsheet(
         )
 
         fig.write_html(str(out_path))
-        print(f"✓ Institutional Plotly interactive HTML tearsheet exported: {out_path}")
         return out_path
 
     except ImportError:
@@ -826,7 +709,7 @@ th {{ background: #1e293b; color: #94a3b8; }}
 </div>
 
 <div class="card">
-  <h3>Top Momentum Candidates</h3>
+  <h3>Top Momentum Candidates (Ranked Strictly by Volar)</h3>
   <table>
     <tr><th>Rank</th><th>Symbol</th><th>Close</th><th>Sector</th><th>Volar</th><th>RRG</th></tr>
 """
@@ -841,10 +724,10 @@ th {{ background: #1e293b; color: #94a3b8; }}
 """
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"✓ Pure-HTML tearsheet exported: {out_path}")
     return out_path
 
 
+# ── ORCHESTRATOR ──
 def generate_all_visuals(
     as_of_date: str,
     breadth_data: Dict,
@@ -853,14 +736,16 @@ def generate_all_visuals(
     ind_hist_df: Optional[pd.DataFrame] = None,
     breadth_hist_df: Optional[pd.DataFrame] = None,
     universe_label: str = "NIFTY 500",
+    bars_df: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Path]:
     """
-    Orchestrates creation of all visual deliverables with unique naming:
-      1. Market Overview 3-Panel Dashboard (PNG)
-      2. Sector Rotation RRG & 30-Day Trajectory (PNG)
-      3. Market Breadth 60-Day Trends (PNG)
-      4. Interactive Plotly Tearsheet (HTML)
-    Mirrors all artifacts to reports/ and /sdcard/Documents/deliverables/.
+    Orchestrates creation of all 5 institutional visual momentum charts + overview:
+      01. RRG Snapshot (PNG)
+      02. Sector Rotation Bump Chart (PNG)
+      03. Market Breadth Multi-Panel (PNG)
+      04. Industry Breadth Heatmap (PNG)
+      05. Sector Excess Returns (PNG)
+      Plus: Market Overview Dashboard (PNG) & HTML Tearsheet.
     """
     base_dir = get_base_dir()
     reports_dir = base_dir / "reports"
@@ -872,37 +757,51 @@ def generate_all_visuals(
 
     slug = _clean_slug(universe_label)
 
-    # Unique filenames
+    # 5 Dedicated Institutional Chart Paths
+    p1_path = charts_dir / f"01_rrg_snapshot_{as_of_date}_{slug}.png"
+    p2_path = charts_dir / f"02_rotation_bump_{as_of_date}_{slug}.png"
+    p3_path = charts_dir / f"03_market_breadth_{as_of_date}_{slug}.png"
+    p4_path = charts_dir / f"04_industry_heatmap_{as_of_date}_{slug}.png"
+    p5_path = charts_dir / f"05_excess_returns_{as_of_date}_{slug}.png"
+
     overview_png = charts_dir / f"market_overview_{as_of_date}_{slug}.png"
-    sector_png = charts_dir / f"sector_rotation_rrg_{as_of_date}_{slug}.png"
-    breadth_png = charts_dir / f"market_breadth_trend_{as_of_date}_{slug}.png"
     html_path = reports_dir / f"mip_mobile_tearsheet_{as_of_date}_{slug}.html"
 
     # Canonical paths
     c_overview = reports_dir / "market_overview_chart.png"
     c_html = reports_dir / "mip_mobile_tearsheet.html"
 
-    p1 = generate_matplotlib_dashboard(breadth_data, sector_data, top_df, output_png=overview_png, universe_label=universe_label)
-    p2 = generate_sector_rotation_history_chart(sector_data, ind_hist_df=ind_hist_df, output_png=sector_png, universe_label=universe_label)
-    p3 = generate_market_breadth_history_chart(breadth_hist_df, output_png=breadth_png, universe_label=universe_label)
-    p4 = generate_plotly_tearsheet(breadth_data, sector_data, top_df, output_html=html_path, universe_label=universe_label)
+    # Generate each chart
+    p1 = generate_rrg_snapshot_chart(sector_data, ind_hist_df=ind_hist_df, output_png=p1_path, universe_label=universe_label)
+    p2 = generate_rotation_bump_chart(bars_df, target_date=as_of_date, output_png=p2_path, universe_label=universe_label)
+    p3 = generate_market_breadth_multipanel(breadth_hist_df, target_date=as_of_date, output_png=p3_path, universe_label=universe_label)
+    p4 = generate_industry_heatmap(bars_df, target_date=as_of_date, output_png=p4_path, universe_label=universe_label)
+    p5 = generate_excess_returns_chart(sector_data, output_png=p5_path, universe_label=universe_label)
+    p_ov = generate_matplotlib_dashboard(breadth_data, sector_data, top_df, output_png=overview_png, universe_label=universe_label)
 
-    # Copy to canonical paths
-    shutil.copyfile(p1, c_overview)
-    shutil.copyfile(p4, c_html)
+    # Copy to canonical
+    shutil.copyfile(p_ov, c_overview)
 
-    # Mirror to deliverables/
-    for p in [p1, p2, p3, p4, c_overview, c_html]:
+    # Pure HTML Tearsheet fallback
+    try:
+        generate_pure_html_fallback(breadth_data, sector_data, top_df, out_path=html_path, universe_label=universe_label)
+        shutil.copyfile(html_path, c_html)
+    except Exception:
+        pass
+
+    # Mirror all generated charts to /sdcard/Documents/deliverables/
+    for p in [p1, p2, p3, p4, p5, p_ov, c_overview]:
         try:
             shutil.copyfile(p, deliv_dir / p.name)
         except Exception:
             pass
 
     return {
-        "overview_png": p1,
-        "sector_rrg_png": p2,
-        "breadth_trend_png": p3,
-        "tearsheet_html": p4,
-        "canonical_overview": c_overview,
-        "canonical_html": c_html,
+        "01_rrg_snapshot": p1,
+        "02_rotation_bump": p2,
+        "03_market_breadth": p3,
+        "04_industry_heatmap": p4,
+        "05_excess_returns": p5,
+        "market_overview": p_ov,
+        "html_tearsheet": html_path,
     }

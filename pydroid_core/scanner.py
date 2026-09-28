@@ -87,6 +87,63 @@ class PydroidScanner:
             "regime": "NORMAL" if is_normal else "DEFENSIVE",
         }
 
+    def _record_picks_history(self, target_date: str, top_df: pd.DataFrame, market_bullish: bool):
+        """Records weekly picks into SQLite picks_history table for Pick Performance tracking."""
+        try:
+            from .data_engine import get_connection
+            conn = get_connection(read_only=False, reuse=False)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS picks_history (
+                    pick_date TEXT,
+                    symbol TEXT,
+                    rank INTEGER,
+                    industry TEXT,
+                    regime TEXT,
+                    signal_type TEXT,
+                    status TEXT,
+                    entry_price REAL,
+                    ret_1w REAL,
+                    ret_1m REAL,
+                    ret_since REAL,
+                    last_px_date TEXT,
+                    volar_score REAL,
+                    PRIMARY KEY (pick_date, symbol)
+                )
+            """)
+            regime_str = "BULL" if market_bullish else "BEAR"
+            sig_str = "BUY" if market_bullish else "BEAR_HOLD"
+            for _, r in top_df.iterrows():
+                sym = str(r["symbol"]).strip().upper()
+                rnk = int(r.get("rank", 0))
+                ind = str(r.get("industry", r.get("sector", "SERVICES"))).strip().upper()
+                px = float(r.get("close", 0.0))
+                volar = float(r.get("volar_score", 0.0))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO picks_history
+                    (pick_date, symbol, rank, industry, regime, signal_type, status, entry_price, ret_1w, ret_1m, ret_since, last_px_date, volar_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (target_date, sym, rnk, ind, regime_str, sig_str, "ACTIVE", px, None, None, 0.0, target_date, volar))
+
+            # Update returns for past active picks using current close prices
+            px_map = dict(zip(top_df["symbol"], top_df["close"]))
+            cursor.execute("SELECT pick_date, symbol, entry_price FROM picks_history WHERE status='ACTIVE' AND pick_date != ?", (target_date,))
+            active_picks = cursor.fetchall()
+            for pdate, sym, entry in active_picks:
+                if sym in px_map and entry > 0:
+                    curr_px = float(px_map[sym])
+                    ret_s = round((curr_px / entry - 1.0) * 100.0, 2)
+                    cursor.execute("""
+                        UPDATE picks_history
+                        SET ret_since=?, last_px_date=?
+                        WHERE pick_date=? AND symbol=?
+                    """, (ret_s, target_date, pdate, sym))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.log(f"Warning: Failed to record picks history ({e})")
+
     def run_scan(
         self,
         as_of_date: Optional[str] = None,
@@ -199,6 +256,28 @@ class PydroidScanner:
             lambda s: s.rolling(14, min_periods=min(5, len(s))).mean()
         ).fillna(bars["close"] * 0.03)
 
+        # 30-day Turnover & RSI-14
+        bars["turnover"] = bars["close"] * bars["volume"]
+        bars["turnover_30d"] = bars.groupby("symbol")["turnover"].transform(
+            lambda s: s.rolling(30, min_periods=min(10, len(s))).mean()
+        ).fillna(0.0)
+        bars["turnover_30d_cr"] = (bars["turnover_30d"] / 1e7).round(2)
+
+        def _calc_rsi(s, period=14):
+            d = s.diff()
+            g = d.clip(lower=0)
+            l = -d.clip(upper=0)
+            ag = g.ewm(alpha=1.0/period, min_periods=period, adjust=False).mean()
+            al = l.ewm(alpha=1.0/period, min_periods=period, adjust=False).mean()
+            rs = ag / al.replace(0, np.nan)
+            return (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
+
+        bars["rsi_14"] = bars.groupby("symbol")["close"].transform(_calc_rsi).round(2)
+        bars["max_move_60"] = bars.groupby("symbol")["ret_1d"].transform(
+            lambda s: s.abs().rolling(60, min_periods=min(10, len(s))).max()
+        ).fillna(0.0)
+        bars["pct_above_ema200"] = ((bars["close"] / bars["ema_200"] - 1.0) * 100.0).round(2)
+
         # Benchmark mapping
         b_df = self.load_benchmark()
         bm_map = dict(zip(b_df["date"], b_df["close"])) if not b_df.empty else {}
@@ -219,6 +298,26 @@ class PydroidScanner:
         if snap.empty:
             raise ValueError(f"No bars available for target date {target_date}")
 
+        # Diagnostic flags on snapshot
+        snap["extension_flag"] = np.where(
+            snap["pct_above_ema200"] > 40.0, "⚠ EXT >40%",
+            np.where(snap["pct_above_ema200"] > 25.0, "EXT >25%", "")
+        )
+        snap["liquidity_flag"] = np.where(
+            snap["turnover_30d"] < 1e7, "⚠ LOW LIQ (<₹1Cr)", ""
+        )
+        snap["sanity_flag"] = np.where(
+            snap["max_move_60"] > 0.35, "⚠ SANITY (>±35% 60d)", ""
+        )
+        snap["industry"] = snap["sector"]
+        snap["above_sma50"] = snap["close"] > snap["ema_50"]
+        snap["above_sma100"] = snap["close"] > snap["close"].rolling(100, min_periods=20).mean().fillna(snap["close"])
+        snap["above_sma200"] = snap["close"] > snap["ema_200"]
+        snap["rs_positive"] = snap["rs_ratio_raw"] > 1.0
+        snap["trend_aligned"] = snap["close"] > snap["ema_200"]
+        snap["elite"] = (snap["close"] > snap["ema_200"]) & (snap["close"] >= 0.85 * snap["high_252"])
+        snap["at_52w_high"] = snap["close"] >= 0.99 * snap["high_252"]
+
         # 1. Market Breadth Engine
         self.log("Evaluating Market Breadth...")
         breadth_results = self.breadth_engine.compute_breadth(as_of_date=target_date, snapshot_df=snap)
@@ -232,6 +331,7 @@ class PydroidScanner:
         )
 
         passed_df = snap[snap["pass_all_filters"]].copy()
+        # STRICT CONSTRAINT: Candidates ranked strictly by Volar score descending!
         passed_df = passed_df.sort_values(by="volar_score", ascending=False).reset_index(drop=True)
 
         # Enforce Sector Concentration Hard Cap (Max 2 stocks per industry/sector)
@@ -271,6 +371,58 @@ class PydroidScanner:
             delivery_df = self.delivery_manager.get_delivery_data(target_dt.date())
         except Exception:
             delivery_df = pd.DataFrame()
+
+        # Map delivery data to top_df and snap
+        if delivery_df is not None and not delivery_df.empty:
+            dmap = delivery_df.set_index("symbol").to_dict(orient="index")
+            top_df["deliv_per"] = top_df["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_pct", np.nan))
+            top_df["deliv_qty"] = top_df["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_qty", np.nan))
+            top_df["deliv_times"] = top_df["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_multiple_5d", np.nan))
+            top_df["deliv_val_cr"] = top_df["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_value_cr", np.nan))
+            top_df["delivery_action"] = top_df["symbol"].map(lambda s: dmap.get(s, {}).get("action", "⚪ NEUTRAL"))
+            snap["deliv_per"] = snap["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_pct", np.nan))
+            snap["deliv_qty"] = snap["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_qty", np.nan))
+            snap["deliv_times"] = snap["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_multiple_5d", np.nan))
+            snap["deliv_val_cr"] = snap["symbol"].map(lambda s: dmap.get(s, {}).get("delivery_value_cr", np.nan))
+
+        # Position Sizing (ATR Risk-Parity for ₹1L Portfolio)
+        total_cap = 100000.0
+        risk_budget = total_cap * 0.01  # 1% risk budget
+        qtys, vals = [], []
+        for _, r in top_df.iterrows():
+            p = float(r["close"])
+            a = float(r["atr_14"])
+            rps = max(2.0 * a, p * 0.02)
+            q = int(risk_budget // rps) if (rps > 0 and p > 0) else 0
+            q = max(0, min(q, int((total_cap * 0.25) // p))) if p > 0 else 0
+            qtys.append(q if market_bullish else 0)
+            vals.append(round(q * p, 2) if market_bullish else 0.0)
+        top_df["target_qty"] = qtys
+        top_df["target_val"] = vals
+
+        # Map industry rank and rotation state
+        ind_rank_map = {s["sector"]: s["rank"] for s in sector_results.get("sectors", [])}
+        ind_rot_map = {s["sector"]: s.get("rotation_state", "NEUTRAL") for s in sector_results.get("sectors", [])}
+        top_df["industry_rank"] = top_df["sector"].map(ind_rank_map).fillna(99).astype(int)
+        top_df["rotation_state"] = top_df["sector"].map(ind_rot_map).fillna("NEUTRAL")
+
+        # Informational Selection Tier (order is STRICTLY by Volar!)
+        def _assign_tier(row):
+            q = str(row.get("rrg_quadrant", "UNKNOWN")).upper()
+            rot = str(row.get("rotation_state", "NEUTRAL")).upper()
+            if (q == "LEADING" and "UPTREND" in rot) or (q == "IMPROVING" and "RECOVERY" in rot):
+                t = "TIER-1 (Leading + Uptrend)"
+            elif q in ["LEADING", "IMPROVING"]:
+                t = "TIER-2 (RRG right side)"
+            else:
+                t = "TIER-3 (All)"
+            return f"HOLD (BEAR - {t})" if not market_bullish else t
+
+        top_df["selection_tier"] = top_df.apply(_assign_tier, axis=1)
+        top_df["tradingview"] = top_df["symbol"].map(lambda s: f"https://in.tradingview.com/chart/?symbol=NSE:{s}")
+
+        # Record picks into persistent SQLite table
+        self._record_picks_history(target_date, top_df, market_bullish)
 
         # 5. Definedge Momentify ALL-ONE ETF Momentum Engine
         self.log("Scanning Definedge Momentify ALL-ONE ETFs...")
@@ -314,6 +466,7 @@ class PydroidScanner:
                 ind_hist_df=ind_hist_df,
                 breadth_hist_df=b_hist_df,
                 universe_label=u_label,
+                bars_df=bars,
             )
             top_df.attrs["chart_paths"] = chart_paths
         except Exception as e:
@@ -322,7 +475,7 @@ class PydroidScanner:
         excel_file = None
         if export_excel:
             try:
-                self.log("Compiling institutional 12-sheet Excel workbook (with embedded charts)...")
+                self.log("Compiling institutional 14-sheet Excel workbook (with embedded charts & raw metrics)...")
                 excel_file = self.excel_generator.generate_workbook(
                     as_of_date=target_date,
                     screener_df=snap[snap["pass_all_filters"]].sort_values("volar_score", ascending=False) if not snap[snap["pass_all_filters"]].empty else top_df,
@@ -336,8 +489,9 @@ class PydroidScanner:
                     universe_label=u_label,
                     bars_df=bars,
                     chart_paths=chart_paths,
+                    snap_df=snap,
                 )
-                self.log(f"Generated 12-sheet Excel workbook: {excel_file}")
+                self.log(f"Generated 14-sheet Excel workbook: {excel_file}")
                 top_df.attrs["excel_path"] = excel_file
             except Exception as e:
                 self.log(f"Warning: Excel workbook compilation failed: {e}")

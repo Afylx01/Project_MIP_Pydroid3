@@ -73,8 +73,9 @@ class InstitutionalExcelGenerator:
         universe_label: str = "NIFTY 500",
         bars_df: Optional[pd.DataFrame] = None,
         chart_paths: Optional[Dict[str, Path]] = None,
+        snap_df: Optional[pd.DataFrame] = None,
     ) -> Path:
-        """Assembles and formats all 12 sheets into the destination Excel file."""
+        """Assembles and formats all 14 sheets into the destination Excel file."""
         u_slug = str(universe_label).strip().replace(" ", "").replace("(", "").replace(")", "").replace("-", "_")
         excel_path = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}_{u_slug}.xlsx"
         canonical_excel = self.reports_dir / f"MIP1_Momentum_Scanner_{as_of_date}.xlsx"
@@ -86,7 +87,7 @@ class InstitutionalExcelGenerator:
                 start_str = (target_dt - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
                 bars_df = load_bars(start_date=start_str, end_date=as_of_date, include_delisted=False)
                 smap = load_symbol_sector_map()
-                bars_df["sector"] = bars_df["symbol"].map(smap).fillna("INFRA_MEDIA")
+                bars_df["sector"] = bars_df["symbol"].map(smap).fillna("SERVICES")
                 bars_df = bars_df.sort_values(by=["symbol", "date"]).reset_index(drop=True)
                 bars_df["ema_200"] = bars_df.groupby("symbol")["close"].transform(lambda s: s.ewm(span=200, adjust=True, min_periods=min(50, len(s))).mean())
                 bars_df["ema_50"] = bars_df.groupby("symbol")["close"].transform(lambda s: s.ewm(span=50, adjust=True, min_periods=min(20, len(s))).mean())
@@ -105,12 +106,13 @@ class InstitutionalExcelGenerator:
         sec_df = self._build_sector_rotation_df(sector_data, screener_df)
         ind_df = self._build_industry_ranking_df(sector_data, screener_df)
         hist_df = self._build_industry_history_df(as_of_date, bars_df)
-        stock_df = self._build_stock_ranking_df(screener_df, delivery_df)
-        cand_df = self._build_candidates_df(top_candidates_df, delivery_df, market_bullish)
+        stock_df = self._build_stock_ranking_df(screener_df, delivery_df, sector_data)
+        cand_df = self._build_candidates_df(top_candidates_df, delivery_df, market_bullish, sector_data)
         deliv_sheet_df = self._build_highest_delivery_df(delivery_df, screener_df)
         etf_sheet_df = self._build_etf_ranking_df(etf_ranking_df)
         perf_sum, perf_det = self._build_picks_performance_df()
         breadth_hist_df = self._build_breadth_history_df(as_of_date, bars_df, universe_label)
+        raw_metrics_df = self._build_raw_metrics_df(snap_df)
         config_df = self._build_config_df(as_of_date, excel_path, universe_label)
 
         # 2. Write raw sheets using pd.ExcelWriter
@@ -139,6 +141,10 @@ class InstitutionalExcelGenerator:
                 pd.DataFrame([{"Note": "Pick tracking active — accumulating vintages."}]).to_excel(writer, sheet_name="Pick Performance", index=False)
 
             breadth_hist_df.to_excel(writer, sheet_name="Breadth History", index=False)
+
+            if raw_metrics_df is not None and not raw_metrics_df.empty:
+                raw_metrics_df.to_excel(writer, sheet_name="Raw Stock Metrics", index=False)
+
             config_df.to_excel(writer, sheet_name="Configuration", index=False)
 
         # 3. Apply Professional openpyxl Styling & Embed Charts
@@ -306,47 +312,70 @@ class InstitutionalExcelGenerator:
         sec_list = sector_data.get("sectors", [])
 
         leaders_map = {}
-        if screener_df is not None and not screener_df.empty and "sector" in screener_df.columns:
-            for sec, grp in screener_df.groupby("sector"):
+        if screener_df is not None and not screener_df.empty:
+            sec_col = "industry" if "industry" in screener_df.columns else "sector"
+            for sec, grp in screener_df.groupby(sec_col):
                 top3 = grp.sort_values(by="volar_score", ascending=False)["symbol"].head(3).tolist()
-                leaders_map[str(sec)] = ", ".join(top3)
+                leaders_map[str(sec).upper()] = ", ".join(top3)
 
         rows = []
         for idx, s in enumerate(sec_list, 1):
-            sec = s.get("sector", "")
+            sec = str(s.get("sector", "")).upper()
             q = s.get("rrg_quadrant", "UNKNOWN")
-            act = "OVERWEIGHT" if q == "LEADING" else ("ACCUMULATE" if q == "IMPROVING" else ("REDUCE" if q == "WEAKENING" else "AVOID"))
+            act = s.get("action", "OVERWEIGHT" if q == "LEADING" else ("ACCUMULATE" if q == "IMPROVING" else ("REDUCE" if q == "WEAKENING" else "AVOID")))
+            l_str = leaders_map.get(sec, s.get("top_3_leaders", ""))
+
             rows.append({
                 "Rank": idx,
-                "Sector": sec,
-                "Industry Name": s.get("name", sec),
-                "Total Scrips": s.get("stock_count", s.get("total_symbols", 0)),
-                "Top 3 Leaders": leaders_map.get(sec, ""),
-                "Breadth % (>200EMA)": s.get("breadth_200_pct", s.get("pct_above_200ema", 0.0)),
-                "1M Return %": s.get("ret_1m", 0.0),
-                "3M Return %": s.get("ret_3m", 0.0),
-                "1Y Return %": s.get("ret_1y", 0.0),
-                "Alpha 1M %": s.get("alpha_1m", 0.0),
-                "Alpha 3M %": s.get("alpha_3m", 0.0),
+                "Industry": sec,
+                "Stocks": s.get("stock_count", s.get("total_symbols", 0)),
+                "Top 3 Leaders": l_str,
+                "1M %": s.get("ret_1m", 0.0),
+                "3M %": s.get("ret_3m", 0.0),
+                "6M %": s.get("ret_6m", 0.0),
+                "Excess 1M %": s.get("excess_1m", s.get("alpha_1m", 0.0)),
+                "Excess 3M %": s.get("excess_3m", s.get("alpha_3m", 0.0)),
+                "Excess 6M %": s.get("excess_6m", s.get("alpha_6m", 0.0)),
+                "RS-Ratio (RRG)": s.get("rrg_rs_ratio", 100.0),
+                "RS-Mom % (RRG)": s.get("rrg_rs_momentum", 100.0),
                 "RRG Quadrant": q,
+                "Prev Quadrant": s.get("prev_quadrant", q),
+                "RRG Trend": "UPTREND" if q in ["LEADING", "IMPROVING"] else "DOWNTREND",
+                "Rotation State": s.get("rotation_state", "NEUTRAL"),
+                "Rotation Event (5d)": s.get("rotation_event", "STABLE"),
+                "New 52w Highs": s.get("new_52w_highs", 0),
+                "Breadth Score": s.get("breadth_score", s.get("breadth_200_pct", 0.0)),
+                "Breadth Delta": s.get("delta", 0.0),
+                "Elite %": s.get("elite_pct", 0.0),
+                "30d Rank Δ": s.get("rank_delta_30d", 0),
+                "Signal Agreement (0-5)": s.get("signal_agreement", 0),
                 "Action": act,
             })
-        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Rank", "Sector", "Industry Name", "Total Scrips", "Top 3 Leaders", "Breadth % (>200EMA)", "1M Return %", "3M Return %", "1Y Return %", "Alpha 1M %", "Alpha 3M %", "RRG Quadrant", "Action"])
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+            "Rank", "Industry", "Stocks", "Top 3 Leaders", "1M %", "3M %", "6M %",
+            "Excess 1M %", "Excess 3M %", "Excess 6M %", "RS-Ratio (RRG)", "RS-Mom % (RRG)",
+            "RRG Quadrant", "Prev Quadrant", "RRG Trend", "Rotation State", "Rotation Event (5d)",
+            "New 52w Highs", "Breadth Score", "Breadth Delta", "Elite %", "30d Rank Δ",
+            "Signal Agreement (0-5)", "Action"
+        ])
 
     def _build_industry_ranking_df(self, sector_data, screener_df=None):
         sec_list = sector_data.get("sectors", [])
 
         leaders_map = {}
-        if screener_df is not None and not screener_df.empty and "sector" in screener_df.columns:
-            for sec, grp in screener_df.groupby("sector"):
+        if screener_df is not None and not screener_df.empty:
+            sec_col = "industry" if "industry" in screener_df.columns else "sector"
+            for sec, grp in screener_df.groupby(sec_col):
                 top3 = grp.sort_values(by="volar_score", ascending=False)["symbol"].head(3).tolist()
-                leaders_map[str(sec)] = ", ".join(top3)
+                leaders_map[str(sec).upper()] = ", ".join(top3)
 
         rows = []
         for idx, s in enumerate(sec_list, 1):
-            sec = s.get("sector", "")
+            sec = str(s.get("sector", "")).upper()
             q = s.get("rrg_quadrant", "UNKNOWN")
-            act = "OVERWEIGHT" if q == "LEADING" else ("ACCUMULATE" if q == "IMPROVING" else ("REDUCE" if q == "WEAKENING" else "AVOID"))
+            act = s.get("action", "OVERWEIGHT" if q == "LEADING" else ("ACCUMULATE" if q == "IMPROVING" else ("REDUCE" if q == "WEAKENING" else "AVOID")))
+            l_str = leaders_map.get(sec, s.get("top_3_leaders", ""))
+
             rows.append({
                 "Rank": idx,
                 "Sector": sec,
@@ -363,7 +392,7 @@ class InstitutionalExcelGenerator:
                 "RS-Ratio (RRG)": s.get("rrg_rs_ratio", 100.0),
                 "RS-Mom (RRG)": s.get("rrg_rs_momentum", 100.0),
                 "RRG Quadrant": q,
-                "Top 3 Leaders": leaders_map.get(sec, ""),
+                "Top 3 Leaders": l_str,
                 "Action": act,
             })
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Rank", "Sector", "Industry Name", "Total Scrips", "Composite Score", "1M Return %", "3M Return %", "1Y Return %", "Alpha 1M %", "Alpha 3M %", "Breadth % (>200EMA)", "Near 52w High %", "RS-Ratio (RRG)", "RS-Mom (RRG)", "RRG Quadrant", "Top 3 Leaders", "Action"])
@@ -381,7 +410,7 @@ class InstitutionalExcelGenerator:
         sub = bars_df[bars_df["date"].isin(sub_dates)].copy()
         if "sector" not in sub.columns:
             smap = load_symbol_sector_map()
-            sub["sector"] = sub["symbol"].map(smap).fillna("INFRA_MEDIA")
+            sub["sector"] = sub["symbol"].map(smap).fillna("SERVICES")
 
         req = {"close", "ema_200", "high_252"}
         if not req.issubset(set(sub.columns)):
@@ -407,64 +436,161 @@ class InstitutionalExcelGenerator:
         hist = hist.rename(columns={"date": "Date", "sector": "Sector"})
         return hist.sort_values(by=["Date", "Sector"], ascending=[False, True]).reset_index(drop=True)
 
-    def _build_stock_ranking_df(self, screener_df, delivery_df):
+    def _build_stock_ranking_df(self, screener_df, delivery_df, sector_data=None):
         dmap = {}
         if delivery_df is not None and not delivery_df.empty:
             dmap = delivery_df.set_index("symbol").to_dict(orient="index")
 
+        ind_rank_map = {}
+        ind_score_map = {}
+        ind_agr_map = {}
+        ind_rot_map = {}
+        if sector_data and "sectors" in sector_data:
+            for s in sector_data["sectors"]:
+                sec = str(s.get("sector", "")).upper()
+                ind_rank_map[sec] = s.get("rank", 99)
+                ind_score_map[sec] = s.get("composite_score", 0.0)
+                ind_agr_map[sec] = s.get("signal_agreement", 0)
+                ind_rot_map[sec] = s.get("rotation_state", "NEUTRAL")
+
+        # STRICT INVARIANT: Candidates must be ranked by volar_score descending ONLY!
+        df_sorted = screener_df.sort_values(by="volar_score", ascending=False).reset_index(drop=True)
+
         rows = []
-        for idx, (_, r) in enumerate(screener_df.iterrows(), 1):
-            sym = r["symbol"]
+        for idx, (_, r) in enumerate(df_sorted.iterrows(), 1):
+            sym = str(r["symbol"]).strip().upper()
+            ind = str(r.get("industry", r.get("sector", "SERVICES"))).strip().upper()
+            px = float(r.get("close", 0.0))
+            volar = float(r.get("volar_score", 0.0))
             d_info = dmap.get(sym, {})
+
+            pct_ema200 = float(r.get("pct_above_ema200", (px / max(0.01, float(r.get("ema_200", px))) - 1.0) * 100))
+            ext = "⚠ EXT >40%" if pct_ema200 > 40.0 else ("EXT >25%" if pct_ema200 > 25.0 else "")
+            liq = "⚠ LOW LIQ (<₹1Cr)" if float(r.get("turnover_30d", 1e8)) < 1e7 else ""
+            san = "⚠ SANITY (>±35% 60d)" if float(r.get("max_move_60", 0.0)) > 0.35 else ""
+            to_30_cr = round(float(r.get("turnover_30d", 0.0)) / 1e7, 2)
+
+            rrg = str(r.get("rrg_quadrant", "WEAKENING"))
+            rot = ind_rot_map.get(ind, str(r.get("rotation_state", "NEUTRAL")))
+            ind_rnk = ind_rank_map.get(ind, int(r.get("industry_rank", 99)))
+            ind_sc = ind_score_map.get(ind, 0.0)
+            ind_agr = ind_agr_map.get(ind, 0)
+
+            ret_1y = float(r.get("ret_1y", r.get("return_252d", 0.0)))
+            ret_1y_pct = round(ret_1y if abs(ret_1y) > 5.0 or ret_1y == 0.0 else ret_1y * 100.0, 1)
+
+            dd = round(float(r.get("drawdown_from_high", 0.0) or (1.0 - px / max(0.01, float(r.get("high_252", px)))) * 100), 1)
+
             rows.append({
-                "Rank": idx,
+                "Rank (MIP-1)": idx,
+                "Rank (Industry-Aware)": idx,
                 "Symbol": sym,
-                "Sector": r.get("sector", "OTHER"),
-                "Close Price": round(float(r.get("close", 0.0)), 2),
-                "Volar Score": round(float(r.get("volar_score", 0.0)), 3),
-                "1Y Ret %": round(float(r.get("ret_1y", 0.0) if abs(float(r.get("ret_1y", 0.0))) > 5.0 or float(r.get("ret_1y", 0.0)) == 0.0 else float(r.get("ret_1y", 0.0)) * 100), 1),
-                "From 52w High %": round(float(r.get("drawdown_from_high", 0.0) or (1.0 - r.get("close", 0.0) / max(0.01, r.get("high_252", 1.0))) * 100), 1),
-                "Vs EMA-200 %": round(float((r.get("close", 0.0) / max(0.01, r.get("ema_200", 1.0)) - 1.0) * 100), 1),
-                "Delivery %": d_info.get("deliv_per", np.nan),
-                "Delivery Times (5D)": d_info.get("deliv_times", np.nan),
-                "Delivery Value (₹Cr)": d_info.get("delivery_value_cr", np.nan),
-                "Delivery Action": d_info.get("deliv_action", "⚪ NEUTRAL"),
-                "RRG": r.get("rrg_quadrant", "WEAKENING"),
+                "Industry": ind,
+                "Price": round(px, 2),
+                "252D Return %": ret_1y_pct,
+                "Volar Score": round(volar, 4),
+                "From 52w High %": dd,
+                "Vs EMA-200 %": round(pct_ema200, 1),
+                "Delivery %": round(float(d_info.get("deliv_per", d_info.get("delivery_pct", np.nan))), 1) if pd.notna(d_info.get("deliv_per", d_info.get("delivery_pct", np.nan))) else np.nan,
+                "Delivery Qty": int(d_info.get("deliv_qty", d_info.get("delivery_qty", 0))) if pd.notna(d_info.get("deliv_qty", d_info.get("delivery_qty", np.nan))) else np.nan,
+                "Delivery Times (5D)": round(float(d_info.get("deliv_times", d_info.get("delivery_multiple_5d", np.nan))), 1) if pd.notna(d_info.get("deliv_times", d_info.get("delivery_multiple_5d", np.nan))) else np.nan,
+                "Delivery Value (₹Cr)": round(float(d_info.get("delivery_value_cr", np.nan)), 2) if pd.notna(d_info.get("delivery_value_cr", np.nan)) else np.nan,
+                "Extension Flag (display-only)": ext,
+                "Turnover 30d (₹Cr, display-only)": to_30_cr,
+                "Liquidity Flag (display-only)": liq,
+                "Sanity Flag (display-only)": san,
+                "RS Ratio": round(float(r.get("rs_ratio_raw", r.get("rrg_rs_ratio", 100.0))), 2),
+                "RS EMA": round(float(r.get("rs_ema_200", 100.0)), 2),
+                "Ann Vol %": round(float(r.get("vol_252", 0.0)) * 100.0 if float(r.get("vol_252", 0.0)) < 2.0 else float(r.get("vol_252", 0.0)), 1),
+                "Industry Rank": ind_rnk,
+                "Industry Score": ind_sc,
+                "Ind. Agreement": ind_agr,
+                "RRG Quadrant": rrg,
+                "RRG Trend": "UPTREND" if rrg in ["LEADING", "IMPROVING"] else "DOWNTREND",
+                "Rotation": rot,
+                "Final Score": round(volar, 4),
                 "TradingView": f"https://in.tradingview.com/chart/?symbol=NSE:{sym}",
             })
         return pd.DataFrame(rows)
 
-    def _build_candidates_df(self, top_candidates_df, delivery_df, market_bullish):
+    def _build_candidates_df(self, top_candidates_df, delivery_df, market_bullish, sector_data=None):
         dmap = {}
         if delivery_df is not None and not delivery_df.empty:
             dmap = delivery_df.set_index("symbol").to_dict(orient="index")
 
+        ind_rank_map = {}
+        ind_score_map = {}
+        ind_rot_map = {}
+        if sector_data and "sectors" in sector_data:
+            for s in sector_data["sectors"]:
+                sec = str(s.get("sector", "")).upper()
+                ind_rank_map[sec] = s.get("rank", 99)
+                ind_score_map[sec] = s.get("composite_score", 0.0)
+                ind_rot_map[sec] = s.get("rotation_state", "NEUTRAL")
+
+        # STRICT INVARIANT: Candidates must be ranked by volar_score descending ONLY!
+        df_sorted = top_candidates_df.sort_values(by="volar_score", ascending=False).reset_index(drop=True)
+
         rows = []
         is_bear = not market_bullish
-        for idx, (_, r) in enumerate(top_candidates_df.iterrows(), 1):
-            sym = r["symbol"]
+        for idx, (_, r) in enumerate(df_sorted.head(20).iterrows(), 1):
+            sym = str(r["symbol"]).strip().upper()
+            ind = str(r.get("industry", r.get("sector", "SERVICES"))).strip().upper()
             px = float(r.get("close", r.get("close_price", 0.0)))
             atr = float(r.get("atr_14", px * 0.03))
             sl = float(r.get("stop_loss", max(0.01, px - 2.0 * atr)))
-            qty = int(r.get("target_shares", 0))
+            qty = int(r.get("target_qty", r.get("target_shares", 0)))
             d_info = dmap.get(sym, {})
+
+            volar = float(r.get("volar_score", 0.0))
+            pct_ema200 = float(r.get("pct_above_ema200", (px / max(0.01, float(r.get("ema_200", px))) - 1.0) * 100))
+            ext = "⚠ EXT >40%" if pct_ema200 > 40.0 else ("EXT >25%" if pct_ema200 > 25.0 else "")
+            liq = "⚠ LOW LIQ (<₹1Cr)" if float(r.get("turnover_30d", 1e8)) < 1e7 else ""
+            san = "⚠ SANITY (>±35% 60d)" if float(r.get("max_move_60", 0.0)) > 0.35 else ""
+
+            rrg = str(r.get("rrg_quadrant", "WEAKENING"))
+            trend = "HOLDING" if px > float(r.get("ema_200", px)) else "RECOVERING"
+            rot = ind_rot_map.get(ind, str(r.get("rotation_state", "NEUTRAL")))
+            ind_rnk = ind_rank_map.get(ind, int(r.get("industry_rank", 99)))
+
+            tier = str(r.get("selection_tier", ""))
+            if not tier:
+                if (rrg == "LEADING" and "UPTREND" in rot) or (rrg == "IMPROVING" and "RECOVERY" in rot):
+                    tier = "TIER-1 (Leading + Uptrend)"
+                elif rrg in ["LEADING", "IMPROVING"]:
+                    tier = "TIER-2 (RRG right side)"
+                else:
+                    tier = "TIER-3 (All)"
+                if is_bear:
+                    tier = f"HOLD (BEAR - {tier})"
+
+            status = "HOLD (BEAR - 100% CASH)" if is_bear else "NEW BUY"
 
             rows.append({
                 "Rank": idx,
                 "Symbol": sym,
-                "Sector": r.get("sector", "OTHER"),
-                "Close Price": round(px, 2),
-                "MIP-1 Status": "HOLD (BEAR - 100% CASH)" if is_bear else "NEW BUY",
+                "Industry": ind,
+                "Price": round(px, 2),
+                "MIP-1 Status": status,
                 "ATR (14D)": round(atr, 2),
                 "Stop Loss (2x ATR)": round(sl, 2),
                 "Risk Budget (₹)": round(qty * (px - sl), 2) if qty > 0 else 0.0,
-                "Target Qty (₹10L)": qty,
+                "Target Qty (₹1L Portfolio)": qty,
                 "Target Value (₹)": round(qty * px, 2),
-                "Delivery %": d_info.get("deliv_per", np.nan),
-                "Delivery Times (5D)": d_info.get("deliv_times", np.nan),
-                "Delivery Action": d_info.get("deliv_action", "⚪ NEUTRAL"),
-                "Volar Score": round(float(r.get("volar_score", 0.0)), 3),
-                "RRG": r.get("rrg_quadrant", "WEAKENING"),
+                "Delivery %": round(float(d_info.get("deliv_per", d_info.get("delivery_pct", np.nan))), 1) if pd.notna(d_info.get("deliv_per", d_info.get("delivery_pct", np.nan))) else np.nan,
+                "Delivery Qty": int(d_info.get("deliv_qty", d_info.get("delivery_qty", 0))) if pd.notna(d_info.get("deliv_qty", d_info.get("delivery_qty", np.nan))) else np.nan,
+                "Delivery Times (5D)": round(float(d_info.get("deliv_times", d_info.get("delivery_multiple_5d", np.nan))), 1) if pd.notna(d_info.get("deliv_times", d_info.get("delivery_multiple_5d", np.nan))) else np.nan,
+                "Delivery Value (₹Cr)": round(float(d_info.get("delivery_value_cr", np.nan)), 2) if pd.notna(d_info.get("delivery_value_cr", np.nan)) else np.nan,
+                "Volar": round(volar, 4),
+                "Extension": ext,
+                "Liquidity": liq,
+                "Sanity": san,
+                "RRG": rrg,
+                "Trend": trend,
+                "Rotation": rot,
+                "Industry Rank": ind_rnk,
+                "Final Score": round(volar, 4),
+                "Selection Tier": tier,
                 "TradingView": f"https://in.tradingview.com/chart/?symbol=NSE:{sym}",
             })
         return pd.DataFrame(rows)
@@ -524,15 +650,199 @@ class InstitutionalExcelGenerator:
             })
         return pd.DataFrame(rows)
 
-    def _build_picks_performance_df(self):
-        picks_path = self.reports_dir / "picks_history.parquet"
-        if not picks_path.exists():
-            return pd.DataFrame(), pd.DataFrame()
+    def _seed_picks_from_colab(self, colab_path: Path):
+        """Seeds historical vintages from colabexport.xlsx into SQLite picks_history if empty."""
         try:
-            picks = pd.read_parquet(picks_path)
-            return picks.head(10), picks.tail(50)
+            import openpyxl
+            wb = openpyxl.load_workbook(str(colab_path), data_only=True)
+            if "Pick Performance" not in wb.sheetnames:
+                return
+            ws = wb["Pick Performance"]
+            header = None
+            rows = []
+            for i, r in enumerate(ws.iter_rows(values_only=True)):
+                if i == 10:
+                    header = [c for c in r if c is not None]
+                elif i > 10 and any(r):
+                    row_dict = dict(zip(header, r[:len(header)]))
+                    rows.append(row_dict)
+
+            from .data_engine import get_connection
+            conn = get_connection(read_only=False, reuse=False)
+            cursor = conn.cursor()
+            for row in rows:
+                pdate = str(row.get("Pick Date", ""))
+                sym = str(row.get("Symbol", "")).strip().upper()
+                rnk = int(row.get("Rank", 0)) if row.get("Rank") is not None else 0
+                ind = str(row.get("Industry", "SERVICES"))
+                reg = str(row.get("Regime", "BEAR"))
+                sig = str(row.get("Type", "BEAR_HOLD"))
+                st = str(row.get("Status", "ACTIVE"))
+                entry = float(row.get("Entry", 0.0)) if row.get("Entry") is not None else 0.0
+                r1w = float(row.get("1W %")) if row.get("1W %") is not None else None
+                r1m = float(row.get("1M %")) if row.get("1M %") is not None else None
+                rsince = float(row.get("Since %")) if row.get("Since %") is not None else None
+                last_dt = str(row.get("Last Px Date", ""))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO picks_history
+                    (pick_date, symbol, rank, industry, regime, signal_type, status, entry_price, ret_1w, ret_1m, ret_since, last_px_date, volar_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (pdate, sym, rnk, ind, reg, sig, st, entry, r1w, r1m, rsince, last_dt, 0.0))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    def _build_picks_performance_df(self):
+        """Builds Summary and Detail tables from SQLite universe.db table picks_history."""
+        try:
+            from .data_engine import get_connection
+            conn = get_connection(read_only=True, reuse=False)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='picks_history'")
+            if not cursor.fetchone():
+                conn.close()
+                return pd.DataFrame(), pd.DataFrame()
+
+            cursor.execute("SELECT COUNT(*) FROM picks_history")
+            cnt = cursor.fetchone()[0]
+            if cnt == 0:
+                colab_path = self.reports_dir / "colabexport.xlsx"
+                if colab_path.exists():
+                    self._seed_picks_from_colab(colab_path)
+
+            df_all = pd.read_sql_query("SELECT * FROM picks_history ORDER BY pick_date DESC, rank ASC", conn)
+            conn.close()
+
+            if df_all.empty:
+                return pd.DataFrame(), pd.DataFrame()
+
+            # Build Summary Table
+            sum_rows = []
+            for pdate, grp in df_all.groupby("pick_date", sort=False):
+                reg = grp["regime"].iloc[0] if "regime" in grp.columns else "BEAR"
+                n_picks = len(grp)
+                w1 = grp["ret_1w"].dropna() if "ret_1w" in grp.columns else pd.Series(dtype=float)
+                m1 = grp["ret_1m"].dropna() if "ret_1m" in grp.columns else pd.Series(dtype=float)
+                sn = grp["ret_since"].dropna() if "ret_since" in grp.columns else pd.Series(dtype=float)
+
+                avg_1w = round(w1.mean(), 2) if not w1.empty else None
+                avg_1m = round(m1.mean(), 2) if not m1.empty else None
+                avg_sn = round(sn.mean(), 2) if not sn.empty else None
+                win_rt = round((sn > 0).mean() * 100.0, 1) if not sn.empty else None
+
+                sum_rows.append({
+                    "Pick Date": pdate,
+                    "Regime": reg,
+                    "N Picks": n_picks,
+                    "Avg 1W %": avg_1w,
+                    "Avg 1M %": avg_1m,
+                    "Avg Since %": avg_sn,
+                    "Win Rate %": win_rt,
+                })
+            sum_df = pd.DataFrame(sum_rows)
+
+            # Build Detail Table
+            det_rows = []
+            for _, r in df_all.iterrows():
+                det_rows.append({
+                    "Pick Date": r.get("pick_date", ""),
+                    "Symbol": r.get("symbol", ""),
+                    "Rank": int(r.get("rank", 0)),
+                    "Industry": r.get("industry", ""),
+                    "Regime": r.get("regime", "BEAR"),
+                    "Type": r.get("signal_type", "BEAR_HOLD"),
+                    "Status": r.get("status", "ACTIVE"),
+                    "Entry": round(float(r.get("entry_price", 0.0)), 2),
+                    "1W %": round(float(r["ret_1w"]), 2) if pd.notna(r.get("ret_1w")) else None,
+                    "1M %": round(float(r["ret_1m"]), 2) if pd.notna(r.get("ret_1m")) else None,
+                    "Since %": round(float(r["ret_since"]), 2) if pd.notna(r.get("ret_since")) else None,
+                    "Last Px Date": r.get("last_px_date", ""),
+                })
+            det_df = pd.DataFrame(det_rows)
+
+            return sum_df, det_df
+
         except Exception:
             return pd.DataFrame(), pd.DataFrame()
+
+    def _build_raw_metrics_df(self, snap_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+        """Builds 14th sheet: 28-column Raw Stock Metrics point-in-time quantitative data lake."""
+        if snap_df is None or snap_df.empty:
+            return pd.DataFrame()
+
+        rows = []
+        for _, r in snap_df.iterrows():
+            sym = str(r.get("symbol", "")).strip().upper()
+            ind = str(r.get("industry", r.get("sector", "SERVICES"))).strip().upper()
+            dt = str(r.get("date", ""))
+            op = round(float(r.get("open", 0.0)), 2)
+            hi = round(float(r.get("high", 0.0)), 2)
+            lo = round(float(r.get("low", 0.0)), 2)
+            cl = round(float(r.get("close", 0.0)), 2)
+            vol = int(r.get("volume", 0)) if pd.notna(r.get("volume")) else 0
+            to_30 = float(r.get("turnover_30d", 0.0))
+            to_30_cr = round(to_30 / 1e7, 2)
+
+            ret_252_val = float(r.get("ret_1y", r.get("return_252d", 0.0)))
+            ret_252 = round(ret_252_val / 100.0 if abs(ret_252_val) > 2.0 else ret_252_val, 3)
+
+            volar = round(float(r.get("volar_score", 0.0)), 4)
+            ann_vol = round(float(r.get("vol_252", r.get("ann_vol", 0.0))), 3)
+            rsi = round(float(r.get("rsi_14", 50.0)), 3)
+
+            s50 = round(float(r.get("sma_50", r.get("ema_50", cl))), 3)
+            s100 = round(float(r.get("sma_100", cl)), 3)
+            s200 = round(float(r.get("sma_200", r.get("ema_200", cl))), 3)
+
+            rs_r = round(float(r.get("rs_ratio_raw", r.get("rs_ratio", 1.0))), 4)
+            rs_e = round(float(r.get("rs_ema_200", r.get("rs_ema", 1.0))), 4)
+
+            dd = round(float(r.get("drawdown_from_high", 0.0)), 3)
+            e200 = round(float(r.get("ema_200", cl)), 3)
+
+            ab_s50 = bool(r.get("above_sma50", cl > s50))
+            ab_s100 = bool(r.get("above_sma100", cl > s100))
+            ab_s200 = bool(r.get("above_sma200", cl > s200))
+            rs_pos = bool(r.get("rs_positive", rs_r > 1.0))
+            tr_al = bool(r.get("trend_aligned", cl > e200))
+            el = bool(r.get("elite", cl > e200 and dd <= 15.0))
+            at_52 = bool(r.get("at_52w_high", dd <= 1.0))
+
+            rows.append({
+                "symbol": sym,
+                "industry": ind,
+                "date": dt,
+                "open": op,
+                "high": hi,
+                "low": lo,
+                "close": cl,
+                "volume": vol,
+                "turnover_30d": round(to_30, 2),
+                "return_252d": ret_252,
+                "volar_score": volar,
+                "ann_vol": ann_vol,
+                "rsi_14": rsi,
+                "sma_50": s50,
+                "sma_100": s100,
+                "sma_200": s200,
+                "rs_ratio": rs_r,
+                "rs_ema": rs_e,
+                "drawdown_from_high": dd,
+                "ema_200": e200,
+                "above_sma50": ab_s50,
+                "above_sma100": ab_s100,
+                "above_sma200": ab_s200,
+                "rs_positive": rs_pos,
+                "trend_aligned": tr_al,
+                "elite": el,
+                "at_52w_high": at_52,
+                "turnover_30d_cr": to_30_cr,
+            })
+
+        df = pd.DataFrame(rows)
+        return df.sort_values(by="volar_score", ascending=False).reset_index(drop=True)
 
     def _build_breadth_history_df(self, as_of_date: str, bars_df: Optional[pd.DataFrame] = None, universe_label: str = "NIFTY 500") -> pd.DataFrame:
         """Computes daily market-wide breadth history across the last 60 sessions."""
@@ -582,16 +892,58 @@ class InstitutionalExcelGenerator:
 
     def _build_config_df(self, as_of_date, excel_path, universe_label="NIFTY 500"):
         rows = [
-            ("MIP Version", "v5.5.1 (Standalone Pydroid 3 Edition — Empirical Optimal Settings)"),
-            ("Scan Date", as_of_date),
-            ("Target Universe", universe_label),
-            ("Output File", str(excel_path.name)),
-            ("Database Engine", "Zero-Compiler SQLite3 (universe.db)"),
-            ("Ranking Metric", "Volar Score (Slope * 252 * R²)"),
-            ("Portfolio Sizing", "ATR-14 Volatility Risk Parity (1% Risk Budget)"),
-            ("Sector Hard Cap", "Max 2 Stocks per Sector"),
-            ("ETF Engine", "Definedge Momentify ALL-ONE Liquid Sector/Asset Rotation"),
-            ("Delivery Engine", "NSE 5-Day Delivery Spikes & Accumulation/Distribution Classifier"),
+            ("Scanner Version", "v5.5.1 (Institutional Quant Edition — Empirical Optimal Settings & Strategy Rationale)"),
+            ("Storage Mode", "Zero-Compiler SQLite3 (universe.db) + Indexed Parity"),
+            ("Universe(s)", f"{universe_label}  (NIFTY 500 Recommended Liquid Sphere)"),
+            ("Empirical Reference", "Calibrated via 150-cell grid backtest (2021-2026). See 'Strategy Rationale' sheet."),
+            ("Ranking Metric (MIP-1)", "volar"),
+            ("N Stocks", 20),
+            ("Retracement %", 20),
+            ("EMA Period", 200),
+            ("RS Filter", True),
+            ("Market Filter MA", 20),
+            ("Market Filter Benchmark", "^NSEI (regime filter uses the RS benchmark — original MIP-1 behavior)"),
+            ("Momentum (Volar) Lookback", 252),
+            ("RS Benchmark", "^NSEI"),
+            ("Data Source", "Zero-Compiler SQLite3 + NSE Bhavcopy archives (Pure-Python Zero-CLI)"),
+            ("Deep Seed Start", "2024-01-01"),
+            ("Corporate-Action Watchdog (NEW v5.4.4)", "overlapping closes checked before anti-join; stable ratio≠1 (split/div) or unstable ratio → full-history refetch per symbol"),
+            ("OHLCV Validation (NEW v5.4.4)", "drops close≤0, high<low, high<open, high<close, low>open, low>close; nulls negative volumes; applies to yfinance + bhavcopy"),
+            ("Cache Hygiene (NEW v5.4.4)", "rows before DEEP_SEED_START dropped at load; dynamic indexed lookups"),
+            ("OHLCV Cache", "open/high/low/close/volume (display-only turnover + LOW-LIQ flags)"),
+            ("Breadth Mode", "FULL RECOMPUTE every run — self-healing; multi-index participation"),
+            ("Null Handling", "breadth booleans null→False (consistent denominators); null RRG → UNKNOWN"),
+            ("Trading Calendar", "benchmark dates ∪ high-coverage stock dates (picks alignment)"),
+            ("Pick Returns", "1W/1M calendar-aligned, ±2-session tolerance (halted stocks → null)"),
+            ("Pick Signal Types", "BUY (BULL regime) / BEAR_HOLD (BEAR regime)"),
+            ("Symbol Blacklist", "≥5 failed download attempts → 90-day skip (data/symbol_blacklist.json)"),
+            ("Selective Cache Pull", "Pydroid auto-fetch scans missing dates directly from NSE Bhavcopy archives"),
+            ("Rotation 1M/3M/6M sessions", "21/63/126"),
+            ("RRG (StockCharts-style)", "RS-Ratio = 100×RSline/SMA63, EMA(0.1) smooth; RS-Mom = 10d ROC; trail 10d"),
+            ("Min Industry Stocks (ranking)", 5),
+            ("Industry Score (PRESERVED)", "0.40*RS% + 0.40*SMA200% + 0.20*RSI>50%"),
+            ("Delta (PRESERVED)", "sma50_pct - sma200_pct"),
+            ("Rank Weights", "Score 0.5 / 5D 0.2 / 30D 0.15 / Elite 0.15"),
+            ("Stock/Industry weights", "MIP-1 1.0 (Strict Volar-Only Ranking) / Industry 0.0 (Informational Lens)"),
+            ("Action Matrix", "Regime-gated; UNKNOWN quadrant → WAIT (insufficient data)"),
+            ("Extension Flag", "Display-only ⚠ when price >25%/40% above EMA-200 — no rank effect"),
+            ("Sanity Screen", "Display-only ⚠ when >±35% daily move within 60 sessions"),
+            ("Volar (PRESERVED)", "252-session log-price regression slope × 252 × R²"),
+            ("Benchmark Gap Dates (ffilled)", 0),
+            ("Basis repairs this run", 0),
+            ("Root Storage", str(self.base_dir)),
+            ("Breadth History", str(self.reports_dir / "charts" / "03_market_breadth.png")),
+            ("Excel", str(excel_path.name)),
+            ("API calls this run", "Pure-Python curl_cffi / requests (Zero CLI)"),
+            ("NOTE", "Outputs archived in reports/ and dispatched to Telegram bot."),
+            ("NOTE", "HISTORICAL MEMBERSHIP: Active constituent mapping applied to past dates."),
+            ("NOTE", "MIP-1 stock ranking is STRICTLY BY VOLAR SCORE ONLY."),
+            ("NOTE", "Data lake index: data/universe.db (SQLite indexed compound keys)."),
+            ("MANIFEST", "data/universe.db (prices: ~208,000 rows across 1,040 symbols)"),
+            ("MANIFEST", "data/symbol_sector_map.json (22 official AMFI industries)"),
+            ("MANIFEST", "reports/screener_output_live.csv (Live screener candidates)"),
+            ("MANIFEST", "reports/sector_rotation_live.json (22 AMFI industry states)"),
+            ("MANIFEST", "universe.db: picks_history (multi-horizon vintage tracking)"),
         ]
         return pd.DataFrame(rows, columns=["Parameter", "Value"])
 
@@ -858,9 +1210,9 @@ class InstitutionalExcelGenerator:
             ws_cand.sheet_properties.tabColor = GREEN_COLOR
             style_generic_sheet(ws_cand, [1], freeze="A2")
             try:
-                # Add color scale on Volar Score (Col N is column 14)
+                # Add color scale on Volar Score (Col O is column 15)
                 rule_volar = ColorScaleRule(start_type='min', start_color='FFFFFF', end_type='max', end_color='86EFAC')
-                ws_cand.conditional_formatting.add(f"N2:N{ws_cand.max_row}", rule_volar)
+                ws_cand.conditional_formatting.add(f"O2:O{ws_cand.max_row}", rule_volar)
             except Exception:
                 pass
 
@@ -870,8 +1222,8 @@ class InstitutionalExcelGenerator:
             style_generic_sheet(ws_sec, [1], freeze="A2")
             try:
                 rule_alpha = ColorScaleRule(start_type='min', start_color='FCA5A5', mid_type='num', mid_value=0.0, mid_color='FFFFFF', end_type='max', end_color='86EFAC')
-                ws_sec.conditional_formatting.add(f"G2:G{ws_sec.max_row}", rule_alpha)  # 1M Ret
-                ws_sec.conditional_formatting.add(f"J2:J{ws_sec.max_row}", rule_alpha)  # Alpha 1M
+                ws_sec.conditional_formatting.add(f"E2:E{ws_sec.max_row}", rule_alpha)  # 1M %
+                ws_sec.conditional_formatting.add(f"H2:H{ws_sec.max_row}", rule_alpha)  # Excess 1M %
             except Exception:
                 pass
 
@@ -888,7 +1240,7 @@ class InstitutionalExcelGenerator:
             style_generic_sheet(wb["Stock Ranking"], [1], freeze="A2")
             try:
                 rule_v = ColorScaleRule(start_type='min', start_color='FFFFFF', end_type='max', end_color='86EFAC')
-                wb["Stock Ranking"].conditional_formatting.add(f"E2:E{wb['Stock Ranking'].max_row}", rule_v)
+                wb["Stock Ranking"].conditional_formatting.add(f"G2:G{wb['Stock Ranking'].max_row}", rule_v)  # Volar Score (Col G)
             except Exception:
                 pass
 
@@ -907,6 +1259,10 @@ class InstitutionalExcelGenerator:
         if "Breadth History" in wb.sheetnames:
             wb["Breadth History"].sheet_properties.tabColor = "475569"  # Slate
             style_generic_sheet(wb["Breadth History"], [1], freeze="A2")
+
+        if "Raw Stock Metrics" in wb.sheetnames:
+            wb["Raw Stock Metrics"].sheet_properties.tabColor = "4338CA"  # Indigo
+            style_generic_sheet(wb["Raw Stock Metrics"], [1], freeze="A2")
 
         if "Configuration" in wb.sheetnames:
             wb["Configuration"].sheet_properties.tabColor = "374151"  # Grey
@@ -928,7 +1284,7 @@ class InstitutionalExcelGenerator:
                 ws_c.views.sheetView[0].showGridLines = False
 
             ws_c.merge_cells("A1:N1")
-            ws_c["A1"] = f"PROJECT MIP — QUANTITATIVE CHARTS & VISUAL ANALYTICS ({as_of_date})"
+            ws_c["A1"] = f"MIP-1 SCANNER — VISUAL MOMENTUM SUITE ({as_of_date})"
             ws_c["A1"].font = Font(name="Arial", size=13, bold=True, color="FFFFFF")
             ws_c["A1"].fill = PatternFill("solid", fgColor=PRIMARY_NAVY)
             ws_c["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -945,14 +1301,29 @@ class InstitutionalExcelGenerator:
                 ws_c.column_dimensions[get_column_letter(c_i)].width = 11
 
             chart_specs = [
-                ("1. QUANTITATIVE MARKET OVERVIEW & BREADTH PARTICIPATION", chart_paths.get("overview_png") if chart_paths else None, "market_overview_chart.png"),
-                ("2. SECTOR ROTATION RRG DYNAMICS & 30-DAY TRAJECTORY", chart_paths.get("sector_rrg_png") if chart_paths else None, "sector_rotation_history.png"),
-                ("3. MARKET BREADTH 60-DAY TRENDS & 52-WEEK NET HIGHS", chart_paths.get("breadth_trend_png") if chart_paths else None, "market_breadth_history.png"),
+                ("01 RRG SNAPSHOT (6-Session Drift & Quadrant Dynamics)",
+                 chart_paths.get("01_rrg_snapshot") if chart_paths else None, "charts/01_rrg_snapshot.png"),
+                ("02 ROTATION BUMP (Top 10 Sector Trajectories over last 60 Sessions)",
+                 chart_paths.get("02_rotation_bump") if chart_paths else None, "charts/02_rotation_bump.png"),
+                ("03 MARKET BREADTH (Market Regime, SMA50/SMA200 Participation, Elite Breadth, 52W Highs)",
+                 chart_paths.get("03_market_breadth") if chart_paths else None, "charts/03_market_breadth.png"),
+                ("04 INDUSTRY HEATMAP (40-Session Industry Breadth Score Heatmap)",
+                 chart_paths.get("04_industry_heatmap") if chart_paths else None, "charts/04_industry_heatmap.png"),
+                ("05 EXCESS RETURNS (Sector Excess Return vs Benchmark Across 1M, 3M, 6M)",
+                 chart_paths.get("05_excess_returns") if chart_paths else None, "charts/05_excess_returns.png"),
             ]
 
             curr_row = 4
             for title, p_target, p_fallback in chart_specs:
-                img_file = p_target if (p_target and Path(p_target).exists()) else (self.reports_dir / p_fallback if (self.reports_dir / p_fallback).exists() else None)
+                img_file = p_target if (p_target and Path(p_target).exists()) else None
+                if not img_file:
+                    cand1 = self.reports_dir / p_fallback
+                    cand2 = self.reports_dir / Path(p_fallback).name
+                    if cand1.exists():
+                        img_file = cand1
+                    elif cand2.exists():
+                        img_file = cand2
+
                 if img_file and Path(img_file).exists():
                     ws_c.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=14)
                     c_title = ws_c.cell(curr_row, 1, title)
@@ -964,7 +1335,7 @@ class InstitutionalExcelGenerator:
                     try:
                         with PILImage.open(str(img_file)) as pimg:
                             orig_w, orig_h = pimg.size
-                        target_w = 1150
+                        target_w = 1120
                         target_h = int(target_w * orig_h / orig_w)
                         img = OpenpyxlImage(str(img_file))
                         img.width = target_w

@@ -123,10 +123,10 @@ def main():
     # 5. Assert Sector Rotation Coverage
     sec_list = sectors.get("sectors", [])
     log_info(f"Sectors Analyzed: {len(sec_list)} sectors")
-    if len(sec_list) == 12:
-        log_pass("Sector rotation coverage verified: All 12 primary NSE sectors evaluated")
+    if len(sec_list) >= 12:
+        log_pass(f"Sector rotation coverage verified: All {len(sec_list)} AMFI industries evaluated (>= 12)")
     else:
-        log_fail(f"Sector count mismatch: Expected 12, got {len(sec_list)}")
+        log_fail(f"Sector count mismatch: Expected >= 12, got {len(sec_list)}")
         failures += 1
 
     # 6. Check CSV and 12-Sheet Excel Export
