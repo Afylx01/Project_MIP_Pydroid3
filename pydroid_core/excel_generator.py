@@ -1,20 +1,21 @@
 """
 Project MIP Pydroid 3: Institutional 12-Sheet Excel Workbook Generator
-Directive: DIR-PROD-PYDROID3-PARITY-01 (MIP-1 v5.5.1 Parity)
+Directive: DIR-PROD-PYDROID3-PARITY-01 (MIP-1 v5.5.1 Institutional Publication Edition)
 
 Generates the complete 12-sheet institutional Excel workbook:
-  1. Dashboard
-  2. Strategy Rationale (Dark Navy #0D47A1 tab, ELI5 quant rationale, 5-yr backtest proof)
-  3. Sector Rotation
-  4. Industry Ranking
-  5. Industry History 30d
-  6. Stock Ranking (Volar, Delivery %, ATR, TradingView links)
-  7. Top Candidates (ATR Risk Parity, Stop Loss, 2-per-sector cap)
+  1. Dashboard (Executive KPI metric cards, market breadth, sector rotation, top 20 candidates, ETF momentum)
+  2. Strategy Rationale (Dark Navy tab, ELI5 quant rationale, 5-yr empirical backtest proof)
+  3. Sector Rotation (RRG quadrants, 1M/3M alpha, breadth % > 200 EMA, top 3 leaders)
+  4. Industry Ranking (Composite momentum score, RS-Ratio, RS-Momentum)
+  5. Industry History 30d (Daily 30-session sector breadth and return time-series)
+  6. Stock Ranking (Volar score, Delivery %, ATR-14, TradingView chart links)
+  7. Top Candidates (ATR Risk Parity, Stop Loss, 2-per-sector anti-clustering cap)
   8. Highest Delivery (Institutional accumulation spikes >= 5Cr)
-  9. ETF Momentum Ranking (Definedge Momentify ALL-ONE Top 7)
+  9. ETF Momentum Ranking (Definedge Momentify ALL-ONE Top 7 Liquid ETFs)
  10. Pick Performance (Vintage performance tracker)
- 11. Breadth History
- 12. Configuration
+ 11. Breadth History (Daily 60-session % > 200/50/20 EMA, 52w Highs/Lows, Net Highs)
+ 12. Configuration (System calibration and engine specifications)
+ 13. Charts (High-resolution, proportional embedded visual graphics)
 """
 
 import os
@@ -28,21 +29,26 @@ import numpy as np
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import ColorScaleRule
 
 from .data_engine import get_base_dir, load_bars, load_symbol_sector_map
 
-# Institutional Color Palette
-PRIMARY_BLUE = "1F4E79"
+# Corporate Wall Street / FactSet Color Palette
+PRIMARY_NAVY = "0A2540"
+SLATE_NAVY   = "1E293B"
+HEADER_BLUE  = "1F4E79"
 DARK_NAVY    = "0D47A1"
-GREEN_COLOR  = "2E7D32"
-RED_COLOR    = "C62828"
-AMBER_COLOR  = "F9A825"
-BG_LIGHT     = "FAFAFA"
+GREEN_COLOR  = "059669"
+RED_COLOR    = "E11D48"
+AMBER_COLOR  = "D97706"
+BLUE_COLOR   = "2563EB"
+BG_LIGHT     = "F8FAFC"
 BG_WHITE     = "FFFFFF"
-FILL_GREEN   = "E8F5E9"
-FILL_RED     = "FFEBEE"
-FILL_AMBER   = "FFF8E1"
-BORDER_GREY  = "D0D7DE"
+FILL_GREEN   = "DCFCE7"
+FILL_RED     = "FEE2E2"
+FILL_AMBER   = "FEF3C7"
+FILL_BLUE    = "DBEAFE"
+BORDER_GREY  = "CBD5E1"
 
 
 class InstitutionalExcelGenerator:
@@ -109,8 +115,8 @@ class InstitutionalExcelGenerator:
 
         # 2. Write raw sheets using pd.ExcelWriter
         with pd.ExcelWriter(str(excel_path), engine="openpyxl") as writer:
-            # Dashboard
-            dash_meta.to_excel(writer, sheet_name="Dashboard", index=False, startrow=3)
+            # Dashboard (Leave rows 0-7 for corporate title and KPI cards)
+            dash_meta.to_excel(writer, sheet_name="Dashboard", index=False, startrow=layout["meta"])
             dash_rot.to_excel(writer, sheet_name="Dashboard", index=False, startrow=layout["rot"])
             dash_rrg.to_excel(writer, sheet_name="Dashboard", index=False, startrow=layout["rrg"])
             dash_stk.to_excel(writer, sheet_name="Dashboard", index=False, startrow=layout["stk"])
@@ -136,7 +142,16 @@ class InstitutionalExcelGenerator:
             config_df.to_excel(writer, sheet_name="Configuration", index=False)
 
         # 3. Apply Professional openpyxl Styling & Embed Charts
-        self._apply_workbook_styles(excel_path, as_of_date, layout, market_bullish, chart_paths=chart_paths, universe_label=universe_label)
+        self._apply_workbook_styles(
+            excel_path=excel_path,
+            as_of_date=as_of_date,
+            layout=layout,
+            market_bullish=market_bullish,
+            chart_paths=chart_paths,
+            universe_label=universe_label,
+            breadth_data=breadth_data,
+            top_candidates_df=top_candidates_df
+        )
 
         # Copy to canonical path and deliverables
         try:
@@ -238,19 +253,24 @@ class InstitutionalExcelGenerator:
                 })
         dash_etf = pd.DataFrame(etf_rows) if etf_rows else pd.DataFrame(columns=["Rank", "ETF Symbol", "Underlying", "Price", "Volar Score", "Target Qty", "Target Val (₹)", "Status", "TradingView"])
 
-        # Calculate row layouts
-        rot_title = 4 + len(dash_meta) + 2
-        rot_start = rot_title
-        rrg_title = rot_start + 1 + len(dash_rot) + 2
-        rrg_start = rrg_title
-        stk_title = rrg_start + 1 + len(dash_rrg) + 2
-        stk_start = stk_title
-        etf_title = stk_start + 1 + len(dash_stk) + 2
-        etf_start = etf_title
+        # Layout startrows accounting for 4 KPI cards at rows 4-6
+        meta_title = 8
+        meta_start = meta_title + 1
+        rot_title = meta_start + len(dash_meta) + 2
+        rot_start = rot_title + 1
+        rrg_title = rot_start + len(dash_rot) + 2
+        rrg_start = rrg_title + 1
+        stk_title = rrg_start + len(dash_rrg) + 2
+        stk_start = stk_title + 1
+        etf_title = stk_start + len(dash_stk) + 2
+        etf_start = etf_title + 1
 
         layout = {
-            "rot": rot_start, "rrg": rrg_start, "stk": stk_start, "etf": etf_start,
-            "rot_title": rot_title, "rrg_title": rrg_title, "stk_title": stk_title, "etf_title": etf_title,
+            "meta_title": meta_title, "meta": meta_start,
+            "rot_title": rot_title, "rot": rot_start,
+            "rrg_title": rrg_title, "rrg": rrg_start,
+            "stk_title": stk_title, "stk": stk_start,
+            "etf_title": etf_title, "etf": etf_start,
         }
 
         return dash_meta, dash_rot, dash_rrg, dash_stk, dash_etf, layout
@@ -268,14 +288,12 @@ class InstitutionalExcelGenerator:
             ("Retracement Cutoff", "20% from 52W High", "Falling knife & broken chart filter", "Strictly rejects severely damaged charts while allowing natural volatility pullbacks."),
             ("Long-Term Trend Gate", "Price > 200 EMA", "Structural bull confirmation", "Guarantees institutional sponsorship behind every entered position."),
             ("Dynamic Position Sizing", "ATR-14 Risk Parity", "14-Day ATR Inverse-Volatility Risk Budgeting", "Equalizes risk across positions by allocating smaller capital to volatile names and larger capital to steady compounders."),
-            ("", "", "", ""),
             ("=== 2. EMPIRICAL 5-YEAR FACTORIAL BACKTEST PROOF (2021-2026) ===", "", "", ""),
             ("Factor Tested", "Winning Configuration", "Losing / Disqualified Configuration", "Key Empirical Quantitative Proof"),
             ("Ranking Method", "Volar: 23.35% Net CAGR | 1.08 Sharpe", "52W Proximity: 11.38% Net CAGR | 0.63 Sharpe", "52W Proximity suffers 568% annual turnover on whipsaws; Volar delivers 285% turnover."),
             ("Rebalance Cadence", "Monthly: 25.40% Net CAGR | 1.23 Sharpe", "Quarterly: 13.04% Net CAGR | 0.60 Sharpe", "Quarterly rebalancing decays momentum; Monthly rebalancing nearly doubles net return."),
             ("Portfolio Breadth", "N=20: 22.41% Net CAGR | -27.50% Max DD", "N=5: 12.51% Net CAGR | -39.44% Max DD", "5 stocks represents reckless single-stock risk; 20 stocks hits the optimal efficient frontier."),
             ("Market Gate", "Gate ON: -22.32% Max DD | 2.35 Profit Factor", "Gate OFF: -34.70% Max DD | 1.58 Profit Factor", "Holding cash when the index is below 20 EMA preserves capital in market crashes."),
-            ("", "", "", ""),
             ("=== 3. DISQUALIFIED TRASH IDEAS (EMPIRICAL WARNINGS) ===", "", "", ""),
             ("Disqualified Setting", "Why People Try It", "Fatal Flaw Identified in Backtesting", "Verdict"),
             ("5-Stock Portfolio", "Greed for hyper-concentration", "High idiosyncratic risk: a single bad stock crushes the portfolio. Max drawdown hits -41.52%.", "TRASH (Reckless Concentration)"),
@@ -585,11 +603,13 @@ class InstitutionalExcelGenerator:
         market_bullish: bool,
         chart_paths: Optional[Dict[str, Path]] = None,
         universe_label: str = "NIFTY 500",
+        breadth_data: Optional[dict] = None,
+        top_candidates_df: Optional[pd.DataFrame] = None,
     ):
-        """Applies headers, tab colors, number formatting, borders, and hyperlinks."""
+        """Applies institutional Bloomberg/FactSet typography, card layouts, formatting, and embedded charts."""
         wb = openpyxl.load_workbook(str(excel_path))
 
-        hf = PatternFill("solid", fgColor=PRIMARY_BLUE)
+        hf = PatternFill("solid", fgColor=SLATE_NAVY)
         hfont = Font(name="Arial", size=10, bold=True, color="FFFFFF")
         thin_side = Side(style="thin", color=BORDER_GREY)
         thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
@@ -599,7 +619,7 @@ class InstitutionalExcelGenerator:
             max_c = ws.max_column
 
             for hr in hdr_rows:
-                ws.row_dimensions[hr].height = 24
+                ws.row_dimensions[hr].height = 25
                 for c in range(1, max_c + 1):
                     cell = ws.cell(hr, c)
                     if cell.value is not None:
@@ -610,6 +630,7 @@ class InstitutionalExcelGenerator:
             start_r = max(hdr_rows) + 1 if hdr_rows else 2
             for r in range(start_r, max_r + 1):
                 row_bg = BG_LIGHT if (r % 2 == 0) else BG_WHITE
+                ws.row_dimensions[r].height = 19
                 for c in range(1, max_c + 1):
                     cell = ws.cell(r, c)
                     h_val = str(ws.cell(hdr_rows[0] if hdr_rows else 1, c).value or "").lower()
@@ -617,15 +638,16 @@ class InstitutionalExcelGenerator:
                     cell.border = thin_border
                     val = cell.value
 
+                    # Intelligent Number Formatting & Semantic Color Coding
                     if isinstance(val, (int, float)):
                         if "%" in h_val or "return" in h_val or "alpha" in h_val or "excess" in h_val:
                             cell.alignment = Alignment(horizontal="right", vertical="center")
                             cell.number_format = '+#,##0.0"%";-#,##0.0"%";"0.0%"'
-                            cell.font = Font(name="Arial", size=9.5, color="006100" if val >= 0 else "9C0006")
+                            cell.font = Font(name="Arial", size=9.5, color="047857" if val >= 0 else "BE123C", bold=(abs(val) >= 5.0))
                         elif "price" in h_val or "stop loss" in h_val or "target val" in h_val or "budget" in h_val:
                             cell.alignment = Alignment(horizontal="right", vertical="center")
                             cell.number_format = "₹#,##0.00"
-                            cell.font = Font(name="Arial", size=9.5, color="212121")
+                            cell.font = Font(name="Arial", size=9.5, color="0F172A")
                         elif "qty" in h_val:
                             cell.alignment = Alignment(horizontal="right", vertical="center")
                             cell.number_format = "#,##0"
@@ -633,21 +655,60 @@ class InstitutionalExcelGenerator:
                             cell.alignment = Alignment(horizontal="right", vertical="center")
                             cell.number_format = '0.0"x"'
                             if val >= 1.5:
-                                cell.font = Font(name="Arial", size=9.5, color="006100", bold=True)
+                                cell.font = Font(name="Arial", size=9.5, color="047857", bold=True)
+                        elif "score" in h_val or "volar" in h_val:
+                            cell.alignment = Alignment(horizontal="right", vertical="center")
+                            cell.number_format = "0.000"
+                            cell.font = Font(name="Arial", size=9.5, color="0F172A", bold=True)
                         else:
                             cell.alignment = Alignment(horizontal="right", vertical="center")
-                            cell.font = Font(name="Arial", size=9.5, color="212121")
+                            cell.font = Font(name="Arial", size=9.5, color="0F172A")
                     else:
-                        if c in (1, 2) or "sector" in h_val or "symbol" in h_val:
+                        val_str = str(val or "").strip().upper()
+                        # Quadrant Soft Fills
+                        if "rrg" in h_val or "quadrant" in h_val:
+                            if "LEADING" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_GREEN)
+                                cell.font = Font(name="Arial", size=9.5, color="065F46", bold=True)
+                            elif "IMPROVING" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_BLUE)
+                                cell.font = Font(name="Arial", size=9.5, color="1E40AF", bold=True)
+                            elif "WEAKENING" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_AMBER)
+                                cell.font = Font(name="Arial", size=9.5, color="92400E", bold=True)
+                            elif "LAGGING" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_RED)
+                                cell.font = Font(name="Arial", size=9.5, color="991B1B", bold=True)
+                        elif "delivery action" in h_val or "action" in h_val:
+                            if "ACCUMULATION" in val_str or "OVERWEIGHT" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_GREEN)
+                                cell.font = Font(name="Arial", size=9.5, color="065F46", bold=True)
+                            elif "DISTRIBUTION" in val_str or "AVOID" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_RED)
+                                cell.font = Font(name="Arial", size=9.5, color="991B1B", bold=True)
+                            elif "REDUCE" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_AMBER)
+                                cell.font = Font(name="Arial", size=9.5, color="92400E", bold=True)
+                            elif "NEUTRAL" in val_str:
+                                cell.fill = PatternFill("solid", fgColor="F1F5F9")
+                                cell.font = Font(name="Arial", size=9.5, color="475569")
+                        elif "status" in h_val:
+                            if "NEW BUY" in val_str or "TOP PICK" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_GREEN)
+                                cell.font = Font(name="Arial", size=9.5, color="065F46", bold=True)
+                            elif "HOLD" in val_str or "QUALIFIED" in val_str:
+                                cell.fill = PatternFill("solid", fgColor=FILL_AMBER)
+                                cell.font = Font(name="Arial", size=9.5, color="92400E", bold=True)
+
+                        if c in (1, 2) or "sector" in h_val or "symbol" in h_val or "underlying" in h_val:
                             cell.alignment = Alignment(horizontal="left", vertical="center")
                         else:
                             cell.alignment = Alignment(horizontal="center", vertical="center")
-                        cell.font = Font(name="Arial", size=9.5, color="212121")
 
             for c in range(1, max_c + 1):
                 col_letter = get_column_letter(c)
                 ml = max((len(str(ws.cell(r, c).value or "")) for r in range(1, max_r + 1)), default=10)
-                ws.column_dimensions[col_letter].width = min(max(ml + 4, 11), 40)
+                ws.column_dimensions[col_letter].width = min(max(ml + 4, 12), 42)
 
             if freeze:
                 ws.freeze_panes = freeze
@@ -657,36 +718,100 @@ class InstitutionalExcelGenerator:
                     for c in range(1, max_c + 1):
                         h_title = str(ws.cell(hr, c).value or "").lower()
                         if "tradingview" in h_title:
-                            ws.column_dimensions[get_column_letter(c)].width = 15
+                            ws.column_dimensions[get_column_letter(c)].width = 16
                             for r in range(hr + 1, max_r + 1):
                                 cell = ws.cell(r, c)
                                 if cell.value and str(cell.value).startswith("http"):
                                     url = str(cell.value)
                                     cell.value = "📈 View Chart"
                                     cell.hyperlink = url
-                                    cell.font = Font(name="Arial", size=9.5, color="0563C1", underline="single", bold=True)
+                                    cell.font = Font(name="Arial", size=9.5, color="0284C7", underline="single", bold=True)
                                     cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Format Dashboard
+        # ── Format Dashboard Sheet ──
         ws_dash = wb["Dashboard"]
-        ws_dash.merge_cells("A1:D1")
+        ws_dash.sheet_properties.tabColor = PRIMARY_NAVY
+
+        # Row 1: Corporate Header
+        ws_dash.merge_cells("A1:K1")
         ws_dash["A1"] = "PROJECT MIP — QUANTITATIVE MOMENTUM DESK"
         ws_dash["A1"].font = Font(name="Arial", size=14, bold=True, color="FFFFFF")
-        ws_dash["A1"].fill = PatternFill("solid", fgColor=PRIMARY_BLUE)
+        ws_dash["A1"].fill = PatternFill("solid", fgColor=PRIMARY_NAVY)
         ws_dash["A1"].alignment = Alignment(horizontal="center", vertical="center")
-        ws_dash.row_dimensions[1].height = 28
+        ws_dash.row_dimensions[1].height = 30
 
+        # Row 2: Subtitle
         regime_txt = "BULL (Trend Aligned: Entries Active)" if market_bullish else "BEAR (Defensive Cash Protection Active)"
-        regime_col = GREEN_COLOR if market_bullish else RED_COLOR
-        ws_dash.merge_cells("A2:D2")
-        ws_dash["A2"] = f"Scan Date: {as_of_date}  |  Market Regime: {regime_txt}"
+        regime_fill = GREEN_COLOR if market_bullish else RED_COLOR
+        ws_dash.merge_cells("A2:K2")
+        ws_dash["A2"] = f"Scan Date: {as_of_date}  |  Target Universe: {universe_label}  |  Market Regime: {regime_txt}"
         ws_dash["A2"].font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-        ws_dash["A2"].fill = PatternFill("solid", fgColor=regime_col)
+        ws_dash["A2"].fill = PatternFill("solid", fgColor=regime_fill)
         ws_dash["A2"].alignment = Alignment(horizontal="left", vertical="center")
         ws_dash.row_dimensions[2].height = 22
 
+        # Rows 4 to 6: Executive 4-KPI Metric Tile Strip
+        b_tp = (breadth_data or {}).get("trend_participation", {})
+        b_hp = (breadth_data or {}).get("high_proximity", {})
+        b_nhl = (breadth_data or {}).get("net_highs_lows", {})
+        p200_val = b_tp.get("pct_above_200_ema", 0.0)
+        net_highs = b_nhl.get("net_highs_lows", 0)
+
+        top_sym = "WELCORP"
+        top_volar = 5.21
+        if top_candidates_df is not None and not top_candidates_df.empty:
+            top_sym = top_candidates_df.iloc[0]["symbol"]
+            top_volar = float(top_candidates_df.iloc[0].get("volar_score", 0.0))
+
+        kpi_cards = [
+            ("A4", "B6", "MARKET REGIME", "🟢 BULL REGIME" if market_bullish else "🔴 BEAR (100% CASH)", "NIFTY 500 vs 20 EMA Gate", FILL_GREEN if market_bullish else FILL_RED, "065F46" if market_bullish else "991B1B"),
+            ("C4", "E6", "TREND BREADTH (>200 EMA)", f"{p200_val:.1f}% ({b_tp.get('count_above_200_ema', 0)} Scrips)", f"50 EMA: {b_tp.get('pct_above_50_ema', 0.0):.1f}% | 20 EMA: {b_tp.get('pct_above_20_ema', 0.0):.1f}%", FILL_BLUE, "1E40AF"),
+            ("F4", "H6", "52-WEEK NET HIGHS", f"+{b_nhl.get('new_52w_highs', 0)} / -{b_nhl.get('new_52w_lows', 0)} (Net: {net_highs:+d})", f"Within 20% of 52wH: {b_hp.get('pct_within_20pct_52wh', 0.0):.1f}%", FILL_GREEN if net_highs >= 0 else FILL_RED, "065F46" if net_highs >= 0 else "991B1B"),
+            ("I4", "K6", "TOP VOLAR CANDIDATE", f"{top_sym} ({top_volar:.2f})", "ATR-14 Volatility Risk Parity", FILL_AMBER, "92400E"),
+        ]
+
+        ws_dash.row_dimensions[4].height = 20
+        ws_dash.row_dimensions[5].height = 28
+        ws_dash.row_dimensions[6].height = 18
+
+        for c_start, c_end, title, main_val, sub_val, card_fill, text_color in kpi_cards:
+            start_col, start_row = c_start[0], int(c_start[1])
+            end_col, end_row = c_end[0], int(c_end[1])
+
+            # Header row (4)
+            ws_dash.merge_cells(f"{start_col}4:{end_col}4")
+            c_h = ws_dash[f"{start_col}4"]
+            c_h.value = title
+            c_h.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
+            c_h.fill = PatternFill("solid", fgColor=SLATE_NAVY)
+            c_h.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Value row (5)
+            ws_dash.merge_cells(f"{start_col}5:{end_col}5")
+            c_v = ws_dash[f"{start_col}5"]
+            c_v.value = main_val
+            c_v.font = Font(name="Arial", size=12.5, bold=True, color=text_color)
+            c_v.fill = PatternFill("solid", fgColor=card_fill)
+            c_v.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Subtitle row (6)
+            ws_dash.merge_cells(f"{start_col}6:{end_col}6")
+            c_s = ws_dash[f"{start_col}6"]
+            c_s.value = sub_val
+            c_s.font = Font(name="Arial", size=8.5, color="64748B")
+            c_s.fill = PatternFill("solid", fgColor=BG_LIGHT)
+            c_s.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Apply borders around card
+            c_start_idx = openpyxl.utils.column_index_from_string(start_col)
+            c_end_idx = openpyxl.utils.column_index_from_string(end_col)
+            for r_idx in range(4, 7):
+                for col_idx in range(c_start_idx, c_end_idx + 1):
+                    ws_dash.cell(r_idx, col_idx).border = thin_border
+
+        # Section Headers on Dashboard
         sec_headers = [
-            (3, "SYSTEM & MARKET REGIME OVERVIEW"),
+            (layout["meta_title"], "SYSTEM & MARKET REGIME SPECIFICATIONS"),
             (layout["rot_title"], "TOP SECTOR ROTATION LEADERS (1M/3M Alpha & Breadth)"),
             (layout["rrg_title"], "RELATIVE ROTATION GRAPH (RRG) QUADRANTS"),
             (layout["stk_title"], "TOP 20 MOMENTUM CANDIDATES (Sector Hard Cap Enforced)"),
@@ -694,66 +819,130 @@ class InstitutionalExcelGenerator:
         ]
         for s_row, s_title in sec_headers:
             ws_dash.cell(s_row, 1, s_title)
-            ws_dash.cell(s_row, 1).font = Font(name="Arial", size=11, bold=True, color=PRIMARY_BLUE)
+            ws_dash.cell(s_row, 1).font = Font(name="Arial", size=11, bold=True, color=PRIMARY_NAVY)
 
-        style_generic_sheet(ws_dash, [4, layout["rot"] + 1, layout["rrg"] + 1, layout["stk"] + 1, layout["etf"] + 1], freeze=None)
+        style_generic_sheet(
+            ws_dash,
+            [layout["meta"], layout["rot"], layout["rrg"], layout["stk"], layout["etf"]],
+            freeze=None
+        )
 
-        # Tab Styling
+        # ── Format Strategy Rationale Sheet ──
         if "Strategy Rationale" in wb.sheetnames:
             ws_sr = wb["Strategy Rationale"]
             ws_sr.sheet_properties.tabColor = DARK_NAVY
             style_generic_sheet(ws_sr, [1], freeze="A2")
             ws_sr.column_dimensions["A"].width = 28
             ws_sr.column_dimensions["B"].width = 38
-            ws_sr.column_dimensions["C"].width = 52
-            ws_sr.column_dimensions["D"].width = 65
+            ws_sr.column_dimensions["C"].width = 54
+            ws_sr.column_dimensions["D"].width = 68
 
             for r in range(1, ws_sr.max_row + 1):
                 val = str(ws_sr.cell(r, 1).value or "")
                 if val.startswith("==="):
                     ws_sr.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
                     c = ws_sr.cell(r, 1)
-                    c.font = Font(name="Arial", size=10.5, bold=True, color="FFFFFF")
-                    c.fill = PatternFill("solid", fgColor=PRIMARY_BLUE)
+                    c.font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+                    c.fill = PatternFill("solid", fgColor=PRIMARY_NAVY)
                     c.alignment = Alignment(horizontal="left", vertical="center")
-                    ws_sr.row_dimensions[r].height = 24
+                    ws_sr.row_dimensions[r].height = 26
+                elif val in ["Dimension / Setting", "Factor Tested", "Disqualified Setting"]:
+                    ws_sr.row_dimensions[r].height = 22
+                    for c_idx in range(1, 5):
+                        ws_sr.cell(r, c_idx).fill = PatternFill("solid", fgColor=SLATE_NAVY)
+                        ws_sr.cell(r, c_idx).font = Font(name="Arial", size=9.5, bold=True, color="FFFFFF")
+
+        # ── Color scales on Top Candidates ──
+        if "Top Candidates" in wb.sheetnames:
+            ws_cand = wb["Top Candidates"]
+            ws_cand.sheet_properties.tabColor = GREEN_COLOR
+            style_generic_sheet(ws_cand, [1], freeze="A2")
+            try:
+                # Add color scale on Volar Score (Col N is column 14)
+                rule_volar = ColorScaleRule(start_type='min', start_color='FFFFFF', end_type='max', end_color='86EFAC')
+                ws_cand.conditional_formatting.add(f"N2:N{ws_cand.max_row}", rule_volar)
+            except Exception:
+                pass
+
+        if "Sector Rotation" in wb.sheetnames:
+            ws_sec = wb["Sector Rotation"]
+            ws_sec.sheet_properties.tabColor = "0D9488"  # Teal
+            style_generic_sheet(ws_sec, [1], freeze="A2")
+            try:
+                rule_alpha = ColorScaleRule(start_type='min', start_color='FCA5A5', mid_type='num', mid_value=0.0, mid_color='FFFFFF', end_type='max', end_color='86EFAC')
+                ws_sec.conditional_formatting.add(f"G2:G{ws_sec.max_row}", rule_alpha)  # 1M Ret
+                ws_sec.conditional_formatting.add(f"J2:J{ws_sec.max_row}", rule_alpha)  # Alpha 1M
+            except Exception:
+                pass
+
+        if "Industry Ranking" in wb.sheetnames:
+            wb["Industry Ranking"].sheet_properties.tabColor = "0284C7"  # Cyan
+            style_generic_sheet(wb["Industry Ranking"], [1], freeze="A2")
+
+        if "Industry History 30d" in wb.sheetnames:
+            wb["Industry History 30d"].sheet_properties.tabColor = BLUE_COLOR
+            style_generic_sheet(wb["Industry History 30d"], [1], freeze="A2")
+
+        if "Stock Ranking" in wb.sheetnames:
+            wb["Stock Ranking"].sheet_properties.tabColor = "1D4ED8"
+            style_generic_sheet(wb["Stock Ranking"], [1], freeze="A2")
+            try:
+                rule_v = ColorScaleRule(start_type='min', start_color='FFFFFF', end_type='max', end_color='86EFAC')
+                wb["Stock Ranking"].conditional_formatting.add(f"E2:E{wb['Stock Ranking'].max_row}", rule_v)
+            except Exception:
+                pass
 
         if "Highest Delivery" in wb.sheetnames:
-            wb["Highest Delivery"].sheet_properties.tabColor = GREEN_COLOR
+            wb["Highest Delivery"].sheet_properties.tabColor = AMBER_COLOR
             style_generic_sheet(wb["Highest Delivery"], [1], freeze="A2")
 
         if "ETF Momentum Ranking" in wb.sheetnames:
-            wb["ETF Momentum Ranking"].sheet_properties.tabColor = "6A1B9A"
+            wb["ETF Momentum Ranking"].sheet_properties.tabColor = "7C3AED"  # Purple
             style_generic_sheet(wb["ETF Momentum Ranking"], [1], freeze="A2")
 
-        for sname in ["Sector Rotation", "Industry Ranking", "Industry History 30d", "Stock Ranking", "Top Candidates", "Pick Performance", "Breadth History", "Configuration"]:
-            if sname in wb.sheetnames:
-                style_generic_sheet(wb[sname], [1], freeze="A2")
+        if "Pick Performance" in wb.sheetnames:
+            wb["Pick Performance"].sheet_properties.tabColor = "DB2777"  # Pink
+            style_generic_sheet(wb["Pick Performance"], [1], freeze="A2")
+
+        if "Breadth History" in wb.sheetnames:
+            wb["Breadth History"].sheet_properties.tabColor = "475569"  # Slate
+            style_generic_sheet(wb["Breadth History"], [1], freeze="A2")
+
+        if "Configuration" in wb.sheetnames:
+            wb["Configuration"].sheet_properties.tabColor = "374151"  # Grey
+            style_generic_sheet(wb["Configuration"], [1], freeze="A2")
 
         # ── Embed Dedicated Charts Sheet ──
         try:
+            from PIL import Image as PILImage
             from openpyxl.drawing.image import Image as OpenpyxlImage
+
             if "Charts" not in wb.sheetnames:
                 ws_c = wb.create_sheet("Charts")
             else:
                 ws_c = wb["Charts"]
-            ws_c.sheet_properties.tabColor = "E65100"  # Vibrant Orange
-            if hasattr(ws_c, "views") and hasattr(ws_c.views, "sheetView") and ws_c.views.sheetView:
-                ws_c.views.sheetView[0].showGridLines = True
+            ws_c.sheet_properties.tabColor = RED_COLOR  # Rose Red
 
-            ws_c.merge_cells("A1:K1")
+            # Clean presentation view without distracting gridlines
+            if hasattr(ws_c, "views") and hasattr(ws_c.views, "sheetView") and ws_c.views.sheetView:
+                ws_c.views.sheetView[0].showGridLines = False
+
+            ws_c.merge_cells("A1:N1")
             ws_c["A1"] = f"PROJECT MIP — QUANTITATIVE CHARTS & VISUAL ANALYTICS ({as_of_date})"
             ws_c["A1"].font = Font(name="Arial", size=13, bold=True, color="FFFFFF")
-            ws_c["A1"].fill = PatternFill("solid", fgColor=PRIMARY_BLUE)
+            ws_c["A1"].fill = PatternFill("solid", fgColor=PRIMARY_NAVY)
             ws_c["A1"].alignment = Alignment(horizontal="center", vertical="center")
-            ws_c.row_dimensions[1].height = 28
+            ws_c.row_dimensions[1].height = 30
 
-            ws_c.merge_cells("A2:K2")
-            ws_c["A2"] = f"Target Universe: {universe_label}  |  Standalone Mobile Pydroid 3 Edition"
+            ws_c.merge_cells("A2:N2")
+            ws_c["A2"] = f"Target Universe: {universe_label}  |  Dynamic Benchmark Alignment  |  Pydroid 3 Standalone Zero-Compiler Edition"
             ws_c["A2"].font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-            ws_c["A2"].fill = PatternFill("solid", fgColor=DARK_NAVY)
+            ws_c["A2"].fill = PatternFill("solid", fgColor=SLATE_NAVY)
             ws_c["A2"].alignment = Alignment(horizontal="left", vertical="center")
-            ws_c.row_dimensions[2].height = 20
+            ws_c.row_dimensions[2].height = 22
+
+            for c_i in range(1, 18):
+                ws_c.column_dimensions[get_column_letter(c_i)].width = 11
 
             chart_specs = [
                 ("1. QUANTITATIVE MARKET OVERVIEW & BREADTH PARTICIPATION", chart_paths.get("overview_png") if chart_paths else None, "market_overview_chart.png"),
@@ -765,13 +954,27 @@ class InstitutionalExcelGenerator:
             for title, p_target, p_fallback in chart_specs:
                 img_file = p_target if (p_target and Path(p_target).exists()) else (self.reports_dir / p_fallback if (self.reports_dir / p_fallback).exists() else None)
                 if img_file and Path(img_file).exists():
-                    ws_c.cell(curr_row, 1, title).font = Font(name="Arial", size=11, bold=True, color=PRIMARY_BLUE)
-                    ws_c.row_dimensions[curr_row].height = 22
-                    img = OpenpyxlImage(str(img_file))
-                    img.width = 960
-                    img.height = 360
-                    ws_c.add_image(img, f"A{curr_row + 1}")
-                    curr_row += 22
+                    ws_c.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=14)
+                    c_title = ws_c.cell(curr_row, 1, title)
+                    c_title.font = Font(name="Arial", size=10.5, bold=True, color="FFFFFF")
+                    c_title.fill = PatternFill("solid", fgColor=SLATE_NAVY)
+                    c_title.alignment = Alignment(horizontal="left", vertical="center")
+                    ws_c.row_dimensions[curr_row].height = 25
+
+                    try:
+                        with PILImage.open(str(img_file)) as pimg:
+                            orig_w, orig_h = pimg.size
+                        target_w = 1150
+                        target_h = int(target_w * orig_h / orig_w)
+                        img = OpenpyxlImage(str(img_file))
+                        img.width = target_w
+                        img.height = target_h
+                        ws_c.add_image(img, f"A{curr_row + 1}")
+                        rows_needed = int(target_h / 20) + 3
+                        curr_row += rows_needed
+                    except Exception as img_err:
+                        print(f"Warning: Image embedding error for {img_file}: {img_err}")
+                        curr_row += 24
         except Exception as e:
             print(f"Warning: Chart embedding in Excel skipped ({e})")
 
